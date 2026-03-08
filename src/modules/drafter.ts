@@ -78,9 +78,61 @@ export async function generateEmailDraft(
     }
 
     const draft: EmailDraft = JSON.parse(resultText);
-    return draft;
+    return JSON.parse(resultText) as EmailDraft;
   } catch (error) {
-    console.error("Error generating email draft:", error);
-    throw new Error("Failed to generate email draft via Gemini API.");
+    console.error("Failed to generate email draft:", error);
+    throw new Error("Could not draft the application email.");
+  }
+}
+
+/**
+ * Takes an existing email draft and applies the user's revision feedback to generate a new draft.
+ */
+export async function reviseEmailDraft(originalDraft: EmailDraft, feedback: string): Promise<EmailDraft> {
+  const prompt = `
+    You are an expert career advisor and professional copywriter.
+    The user has provided an existing email draft that they've written, but they want you to revise it strictly according to their instructions.
+
+    Existing Draft Subject: "${originalDraft.subject}"
+    Existing Draft Body: 
+    "${originalDraft.bodyText}"
+
+    User's Revision Instructions: "${feedback}"
+
+    Your task is to rewrite the email draft applying these instructions EXACTLY.
+    If they ask you to remove something, remove it. If they ask you to add something, add it smoothly.
+    Keep the rest of the tone identical to the original draft unless instructed otherwise.
+    
+    Return the result strictly as a JSON object matching this schema:
+    {
+      "subject": (the revised subject line),
+      "bodyText": (the revised email body)
+    }
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            subject: { type: Type.STRING },
+            bodyText: { type: Type.STRING }
+          },
+          required: ["subject", "bodyText"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("Empty response from Gemini.");
+
+    return JSON.parse(text) as EmailDraft;
+  } catch (error) {
+    console.error("Failed to revise email draft:", error);
+    throw new Error("Could not revise the application email.");
   }
 }

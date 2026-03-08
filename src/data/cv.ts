@@ -21,8 +21,7 @@ export interface MasterCV {
   }[];
 }
 
-// This is a placeholder for your actual Master CV data.
-// You should update this with your real information.
+
 export const myCV: MasterCV = {
   name: "Emmanuel Adeyemo",
   title: "Frontend Developer",

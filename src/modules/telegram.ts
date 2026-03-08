@@ -1,40 +1,52 @@
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, Context, session } from 'grammy';
 import { env } from '../config/env.js';
 import { myCV, formatCVForPrompt } from '../data/cv.js';
 import { parseJobDescription } from './parser.js';
 import type { ParsedJobDescription } from './parser.js';
 import { evaluateMatch } from './matcher.js';
-import { generateEmailDraft } from './drafter.js';
+import { generateEmailDraft, reviseEmailDraft } from './drafter.js';
 import type { EmailDraft } from './drafter.js';
 import { generateCoverLetterPDF } from './coverLetter.js';
 import { sendApplicationEmail } from './email.js';
 import { runAutoApplyCycle } from './autoApply.js';
 import { saveAdminChatId } from '../data/db.js';
 import fs from 'fs';
+import path from 'path';
 
 // Define the bot and store data temporarily in memory for the callback
-// In a production app, use a database or Redis to store pending applications.
-const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
-const pendingEmails = new Map<number, { payload: any, draft: EmailDraft, status: 'ready' | 'waiting_for_filename' }>();
+interface SessionData {
+  awaitingResumeName: boolean;
+  awaitingRevision: boolean;
+  currentActionId: string | null;
+}
 
-// Formatted CV string
+type MyContext = Context & {
+  session: SessionData;
+};
+
+export const bot = new Bot<MyContext>(env.TELEGRAM_BOT_TOKEN);
+
+// Session middleware
+bot.use(session({ initial: (): SessionData => ({ awaitingResumeName: false, awaitingRevision: false, currentActionId: null }) }));
+
+const pendingEmails = new Map<string, { jobData: ParsedJobDescription, match: any, draft: EmailDraft, customResumeName?: string, coverLetterPath?: string }>();
+
 const cvText = formatCVForPrompt(myCV);
 
 bot.command('start', (ctx) => {
   if (!ctx.from) return;
   const adminId = ctx.from.id;
-  saveAdminChatId(adminId); // Save persistently
+  saveAdminChatId(adminId);
   ctx.reply("👋 Hello! I'm your Job Application Agent.\n\nSend me a messy job description or run /job_hunt to start an automated search!");
 });
 
 bot.command('job_hunt', async (ctx) => {
   if (!ctx.from) return;
   const adminId = ctx.from.id;
-  saveAdminChatId(adminId); // Save persistently
+  saveAdminChatId(adminId);
 
   ctx.reply("🚀 Initiating Automated Job Hunt Cycle manually... I will notify you with the results and any applied jobs.");
   
-  // Run async without blocking the response
   runAutoApplyCycle().catch(err => {
     console.error("Manual job hunt failed:", err);
     ctx.reply("❌ An error occurred during the automated job hunt.");
@@ -46,61 +58,104 @@ bot.on('message:text', async (ctx) => {
   const userId = ctx.from.id;
   const rawJD = ctx.message.text;
 
-  // Check if we are waiting for a filename
-  if (pendingEmails.has(userId)) {
-    const pending = pendingEmails.get(userId)!;
-    if (pending.status === 'waiting_for_filename') {
-      if (pending.payload.attachments && pending.payload.attachments.length > 0) {
-        let newName = rawJD.trim();
-        // Ensure it ends in .pdf
-        if (!newName.toLowerCase().endsWith('.pdf')) {
-          newName += '.pdf';
-        }
-        // Basic sanitization
-        newName = newName.replace(/[^a-zA-Z0-9_.-]/g, '_');
-        pending.payload.attachments[0].filename = newName;
-      }
-      
-      pending.status = 'ready';
-      
-      const keyboard = new InlineKeyboard()
-        .text("🚀 Send Email", "send_email").row()
-        .text("✏️ Rename Attachment", "rename_attachment").row()
-        .text("❌ Cancel", "cancel");
+  // Handle revision input
+  if (ctx.session.awaitingRevision && ctx.session.currentActionId) {
+    const actionId = ctx.session.currentActionId;
+    const pending = pendingEmails.get(actionId);
 
-      await ctx.reply(`✅ Attachment renamed to:\n\`${pending.payload.attachments[0].filename}\`\n\nReady to send?`, {
-        parse_mode: 'Markdown',
-        reply_markup: keyboard
-      });
+    if (!pending) {
+      await ctx.reply("❌ Session expired for revision. Please start over.");
+      ctx.session.awaitingRevision = false;
+      ctx.session.currentActionId = null;
       return;
     }
+
+    await ctx.reply("🔄 Revising email draft based on your feedback...");
+    const revisedDraft = await reviseEmailDraft(pending.draft, rawJD);
+    pending.draft = revisedDraft;
+
+    ctx.session.awaitingRevision = false;
+    ctx.session.currentActionId = null;
+
+    let replyText = `**Job Parsed Successfully**\n`;
+    replyText += `**Role:** ${pending.jobData.jobTitle}\n`;
+    replyText += `**Company:** ${pending.jobData.companyName || 'Not specified'}\n`;
+    replyText += `**Values:** ${pending.jobData.companyValues ? (pending.jobData.companyValues.length > 50 ? pending.jobData.companyValues.substring(0, 50) + '...' : pending.jobData.companyValues) : 'Not specified'}\n`;
+    replyText += `**Required Exp:** ${pending.jobData.requiredExperience}\n`;
+    replyText += `**Key Skills:** ${pending.jobData.keySkills.join(', ')}\n`;
+    replyText += `**Email:** ${pending.jobData.applicationEmail || "Not Found"}\n\n`;
+    
+    replyText += `**Match Evaluation:**\n`;
+    replyText += `📊 Score: ${pending.match.matchScore}%\n`;
+    replyText += `💡 Feedback: ${pending.match.feedback}\n\n`;
+
+    replyText += `**Email Draft (Revised):**\n`;
+    replyText += `*Subject:* ${revisedDraft.subject}\n`;
+    replyText += `*Body:*\n${revisedDraft.bodyText}`;
+
+    const keyboard = new InlineKeyboard()
+      .text("📝 Edit Draft", `edit_${actionId}`)
+      .text("✏️ Rename Resume", `rename_${actionId}`).row()
+      .text("🚀 Send Email", `send_${actionId}`)
+      .text("❌ Cancel", `cancel_${actionId}`);
+
+    await ctx.reply(replyText, { parse_mode: "Markdown", reply_markup: keyboard });
+    return;
   }
 
-  // Let the user know we're working on it
+  // Check if we are waiting for a filename
+  if (ctx.session.awaitingResumeName && ctx.session.currentActionId) {
+    const actionId = ctx.session.currentActionId;
+    const pending = pendingEmails.get(actionId);
+
+    if (!pending) {
+      await ctx.reply("❌ Session expired for resume renaming. Please start over.");
+      ctx.session.awaitingResumeName = false;
+      ctx.session.currentActionId = null;
+      return;
+    }
+
+    let newName = rawJD.trim();
+    if (!newName.toLowerCase().endsWith('.pdf')) {
+      newName += '.pdf';
+    }
+    // Basic sanitization
+    newName = newName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    pending.customResumeName = newName;
+    
+    ctx.session.awaitingResumeName = false;
+    ctx.session.currentActionId = null;
+    
+    const keyboard = new InlineKeyboard()
+      .text("📝 Edit Draft", `edit_${actionId}`)
+      .text("✏️ Rename Resume", `rename_${actionId}`).row()
+      .text("🚀 Send Email", `send_${actionId}`)
+      .text("❌ Cancel", `cancel_${actionId}`);
+
+    await ctx.reply(`✅ Resume attachment renamed to:\n\`${pending.customResumeName}\`\n\nReady to send?`, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard
+    });
+    return;
+  }
+
   const statusMsg = await ctx.reply("🔍 Analyzing the job description...");
 
   try {
-    // 1. Parse JD
     const jobData: ParsedJobDescription = await parseJobDescription(rawJD);
     
-    // Update status
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "⚙️ Evaluating match score...");
 
-    // 2. Evaluate Match
     const match = await evaluateMatch(jobData, cvText);
 
-    // Update status
     await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "✍️ Drafting application email...");
 
-    // 4. Draft Email
     const draft = await generateEmailDraft(jobData, cvText, match.feedback);
 
-    // Update status
     if (jobData.requiresCoverLetter) {
       await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id, "📄 Generating tailored Cover Letter PDF...");
     }
 
-    // 5. Generate Cover Letter only if requested
     let coverLetterFilename: string | undefined;
     let coverLetterPath: string | undefined;
     if (jobData.requiresCoverLetter) {
@@ -108,7 +163,24 @@ bot.on('message:text', async (ctx) => {
       coverLetterPath = await generateCoverLetterPDF(jobData, cvText, `./${coverLetterFilename}`);
     }
 
-    // 6. Construct Final Message
+    // Save state in memory cache
+    const actionId = `draft_${Date.now()}`;
+    const newPendingEmail: {
+      jobData: ParsedJobDescription;
+      match: any;
+      draft: EmailDraft;
+      customResumeName?: string;
+      coverLetterPath?: string;
+    } = { jobData, match, draft };
+
+    if (coverLetterPath) {
+      newPendingEmail.coverLetterPath = coverLetterPath;
+    }
+
+    pendingEmails.set(actionId, newPendingEmail);
+
+
+    //Final Message
     let replyText = `**Job Parsed Successfully**\n`;
     replyText += `**Role:** ${jobData.jobTitle}\n`;
     replyText += `**Company:** ${jobData.companyName || 'Not specified'}\n`;
@@ -129,12 +201,10 @@ bot.on('message:text', async (ctx) => {
     const keyboard = new InlineKeyboard();
     
     if (jobData.applicationEmail) {
-      // Make a professional dynamic filename based on CV name and Job Title
       const dynamicFilename = `${myCV.name.replace(/\s+/g, '_')}_${jobData.jobTitle.replace(/[^a-zA-Z0-9]/g, '_')}_Resume.pdf`;
 
-      keyboard.text("🚀 Send Email", "send_email").row();
-
-      // Check if resume.pdf exists in the project root
+      keyboard.text("📝 Edit Draft", `edit_${actionId}`)
+      
       const resumeFileExists = fs.existsSync('./resume.pdf');
       
       let attachments = [];
@@ -146,7 +216,7 @@ bot.on('message:text', async (ctx) => {
            attachments.push({ filename: dynamicFilename, path: './resume.pdf' });
            replyText += `- \`${dynamicFilename}\`\n`;
            attachedSomething = true;
-           keyboard.text("✏️ Rename Resume", "rename_attachment").row();
+           keyboard.text("✏️ Rename Resume", `rename_${actionId}`).row();
         } else {
            replyText += `⚠️ *No Resume Found:* The JD requested a resume, but please place a \`resume.pdf\` file in the project root folder if you want it included.\n`;
         }
@@ -162,24 +232,15 @@ bot.on('message:text', async (ctx) => {
         replyText += `- Cover Letter skipped (Not requested by JD)\n`;
       }
       
-      keyboard.text("❌ Cancel", "cancel");
+      keyboard.text("🚀 Send Email", `send_${actionId}`)
+      keyboard.text("❌ Cancel", `cancel_${actionId}`);
 
-      // Store data for the callback
-      pendingEmails.set(userId, { 
-        status: 'ready',
-        payload: { 
-          to: jobData.applicationEmail,
-          attachments: attachments
-        },
-        draft: draft 
-      });
     } else {
        replyText += `\n\n⚠️ No application email was found in the JD, so I cannot send it via Gmail.`;
     }
 
     await ctx.reply(replyText, { parse_mode: "Markdown", reply_markup: keyboard });
 
-    // Clean up status message
     await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id);
 
   } catch (error: any) {
@@ -188,68 +249,121 @@ bot.on('message:text', async (ctx) => {
   }
 });
 
-// Handle Callbacks
-bot.callbackQuery('rename_attachment', async (ctx) => {
-  const userId = ctx.from.id;
-  const pending = pendingEmails.get(userId);
+// Handle Edit button
+bot.callbackQuery(/^edit_(.+)$/, async (ctx) => {
+  try {
+    const actionId = ctx.match[1];
+    if (!actionId) return;
+    
+    const pending = pendingEmails.get(actionId);
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: "Session expired or invalid.", show_alert: true });
+      return;
+    }
 
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired or invalid.", show_alert: true });
-    return;
+    ctx.session.awaitingRevision = true;
+    ctx.session.currentActionId = actionId;
+
+    await ctx.reply("📝 What would you like to change about the draft? (e.g. 'Make it more formal', 'Remove the second sentence')");
+    await ctx.answerCallbackQuery();
+  } catch (err) {
+    console.error(err);
+    await ctx.answerCallbackQuery({ text: "Error preparing edit.", show_alert: true });
   }
+});
 
-  pending.status = 'waiting_for_filename';
+// Handle Rename button
+bot.callbackQuery(/^rename_(.+)$/, async (ctx) => {
+  try {
+    const actionId = ctx.match[1];
+    if (!actionId) return;
+    
+    const pending = pendingEmails.get(actionId);
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: "Session expired or invalid.", show_alert: true });
+      return;
+    }
+
+    ctx.session.awaitingResumeName = true;
+    ctx.session.currentActionId = actionId;
+
+    const currentName = pending.customResumeName || 'resume.pdf';
+    await ctx.reply(`Current resume filename: \`${currentName}\`\n\nPlease type the new filename (e.g. \`Emmanuel_Frontend_CV.pdf\`):`, {
+      parse_mode: 'Markdown'
+    });
+    await ctx.answerCallbackQuery();
+  } catch (err) {
+    console.error(err);
+    await ctx.answerCallbackQuery({ text: "Error starting rename.", show_alert: true });
+  }
+});
+
+// Handle Send Email
+bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
+  try {
+    const actionId = ctx.match[1];
+    if (!actionId) return;
+    
+    const pending = pendingEmails.get(actionId);
+
+    if (!pending) {
+      await ctx.answerCallbackQuery({ text: "Email data expired or already sent.", show_alert: true });
+      return;
+    }
+
+    if (!pending.jobData.applicationEmail) {
+      await ctx.answerCallbackQuery({ text: "No application email was found for this job.", show_alert: true });
+      return;
+    }
+
+    // Attach Cover Letter if we generated one
+    const attachments = [];
+    if (pending.coverLetterPath) {
+      attachments.push({ filename: 'Cover_Letter.pdf', path: pending.coverLetterPath });
+    }
+    
+    if (fs.existsSync(path.resolve(process.cwd(), 'resume.pdf'))) {
+      const finalName = pending.customResumeName || 'resume.pdf';
+      attachments.push({ filename: finalName, path: path.resolve(process.cwd(), 'resume.pdf') });
+    }
+
+    await ctx.editMessageText(`🚀 Sending email to ${pending.jobData.applicationEmail}...`);
+
+    await sendApplicationEmail({
+      to: pending.jobData.applicationEmail,
+      subject: pending.draft.subject,
+      bodyText: pending.draft.bodyText,
+      attachments: attachments
+    });
+
+    await ctx.editMessageText(`✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\``, { parse_mode: "Markdown" });
+
+    pendingEmails.delete(actionId);
+
+  } catch (error) {
+    console.error("Failed to send email via callback:", error);
+    await ctx.answerCallbackQuery({ text: "Failed to send email. Check console.", show_alert: true });
+  }
+});
+
+// Handle Cancel
+bot.callbackQuery(/^cancel_(.+)$/, async (ctx) => {
+  const actionId = ctx.match[1];
+  if (actionId) {
+    pendingEmails.delete(actionId);
+  }
+  ctx.session.awaitingRevision = false;
+  ctx.session.awaitingResumeName = false;
+  ctx.session.currentActionId = null;
   
-  const currentName = pending.payload.attachments?.[0]?.filename || 'resume.pdf';
-
+  await ctx.editMessageText("❌ Application cancelled.");
   await ctx.answerCallbackQuery();
-  await ctx.reply(`The current attachment name is:\n\`${currentName}\`\n\nPlease reply with the new filename you want to use (e.g. My_Custom_Resume):`, { parse_mode: 'Markdown' });
 });
 
-bot.callbackQuery('send_email', async (ctx) => {
-  const userId = ctx.from.id;
-  const pending = pendingEmails.get(userId);
-
-  if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired or invalid. Please try again.", show_alert: true });
-    return;
-  }
-
-  // Acknowledge the button press
-  await ctx.answerCallbackQuery("Sending email...");
-
-  // Execute Send
-  const result = await sendApplicationEmail({
-    to: pending.payload.to,
-    subject: pending.draft.subject,
-    bodyText: pending.draft.bodyText,
-    attachments: pending.payload.attachments
-  });
-
-  if (result.success) {
-    // Edit the message to show success
-    const newText = ctx.callbackQuery.message?.text + `\n\n✅ **Email Sent Successfully!** (ID: ${result.id})`;
-    await ctx.editMessageText(newText, { parse_mode: 'Markdown' }); // Removed the keyboard
-    pendingEmails.delete(userId); // Clear memory
-  } else {
-    await ctx.answerCallbackQuery({ text: `Failed to send email: ${result.error}`, show_alert: true });
-  }
-});
-
-bot.callbackQuery('cancel', async (ctx) => {
-  const userId = ctx.from.id;
-  pendingEmails.delete(userId);
-  await ctx.answerCallbackQuery("Application canceled.");
-  const newText = ctx.callbackQuery.message?.text + `\n\n❌ **Application Canceled.**`;
-  await ctx.editMessageText(newText, { parse_mode: 'Markdown' }); 
-});
-
-// Start the bot gracefully
 export function startBot() {
   bot.start();
   console.log("🤖 Job Agent Bot is running...");
   
-  // Enable graceful stop
   process.once('SIGINT', () => bot.stop());
   process.once('SIGTERM', () => bot.stop());
 }
