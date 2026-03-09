@@ -1,11 +1,9 @@
-import { GoogleGenAI } from '@google/genai';
-import { env } from '../config/env.js';
+import { aiService } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 import { mdToPdf } from 'md-to-pdf';
 import fs from 'fs';
 import path from 'path';
 
-const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 
 /**
  * Generates a tailored Cover Letter in Markdown format using Gemini, carefully crafted to sound human
@@ -38,6 +36,7 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
 7. Sign off with my name from the CV.
 `;
 
+  const ai = aiService.getClient();
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: prompt,

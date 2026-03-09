@@ -1,8 +1,7 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import { env } from '../config/env.js';
+import { Type } from '@google/genai';
+import { aiService } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
-const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
 
 const evaluationSchema = {
   type: Type.OBJECT,
@@ -57,6 +56,7 @@ export async function evaluateMatch(
   `;
 
   try {
+    const ai = aiService.getClient();
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,

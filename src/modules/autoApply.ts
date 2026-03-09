@@ -16,6 +16,9 @@ import { env } from '../config/env.js';
 
 const MIN_MATCH_SCORE = 80;
 
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+
 export async function runAutoApplyCycle() {
   console.log("🚀 Starting Auto-Apply Cycle...");
   
@@ -49,6 +52,9 @@ export async function runAutoApplyCycle() {
       }
 
       console.log(`   ⚙️  Processing ${job.job_title} at ${job.employer_name}`);
+
+      await sleep(2500); 
+
 
       let dbRecord: DBJobRecord = {
         id: job.job_id,

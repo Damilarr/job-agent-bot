@@ -1,8 +1,5 @@
-import { GoogleGenAI, Type } from '@google/genai';
-import { env } from '../config/env.js';
-
-// Initialize the Gemini client
-const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+import { Type } from '@google/genai';
+import { aiService } from '../services/ai.js';
 
 // Define the expected output structure using Gemini's Schema
 const responseSchema = {
@@ -82,6 +79,7 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
   `;
 
   try {
+    const ai = aiService.getClient();
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,

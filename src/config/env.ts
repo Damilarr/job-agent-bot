@@ -6,7 +6,7 @@ config();
 
 // Define the schema for our environment variables
 const envSchema = z.object({
-  GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required"),
+  GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required").transform(val => val.split(',').map(k => k.trim())),
   TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
   GMAIL_USER: z.string().email("GMAIL_USER must be a valid email address").min(1, "GMAIL_USER is required"),
   GMAIL_APP_PASSWORD: z.string().min(1, "GMAIL_APP_PASSWORD is required"),
