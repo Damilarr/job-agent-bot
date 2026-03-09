@@ -65,6 +65,18 @@ export async function runAutoApplyCycle() {
         matchScore: null
       };
 
+      const hasDirectEmail = !!job.job_apply_email;
+      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+      const descriptionHasEmail = emailRegex.test(job.job_description);
+
+      if (!hasDirectEmail && !descriptionHasEmail) {
+         console.log(`      ⏭  Fast Pre-Filter: No email detected. Skipping to save AI tokens.`);
+         logProcessedJob(dbRecord);
+         continue;
+      }
+
+      await sleep(2500); 
+
       try {
         // 2. Parse JD to find required details (and crucially, the email)
         // Some APIs provide `job_apply_email`, but if not, we rely on the description parsing
