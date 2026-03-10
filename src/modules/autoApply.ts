@@ -47,14 +47,9 @@ export async function runAutoApplyCycle() {
     for (const job of jobs) {
       // 1. Check if processed
       if (hasJobBeenProcessed(job.job_id)) {
-        console.log(`   ⏭  Skipping ${job.job_title} at ${job.employer_name} (Already Processed)`);
+        // Silently skip already processed jobs to keep logs incredibly clean
         continue;
       }
-
-      console.log(`   ⚙️  Processing ${job.job_title} at ${job.employer_name}`);
-
-      await sleep(2500); 
-
 
       let dbRecord: DBJobRecord = {
         id: job.job_id,
@@ -65,16 +60,31 @@ export async function runAutoApplyCycle() {
         matchScore: null
       };
 
-      const hasDirectEmail = !!job.job_apply_email;
-      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
-      const descriptionHasEmail = emailRegex.test(job.job_description);
+      // Fast Pre-Filter: Stringify the entire job object to catch any email
+      const jobString = JSON.stringify(job);
+      
+      // Stricter Regex: Ensures the text before and after the @ symbol looks like a real email,
+      // and explicitly rejects anything ending in common tracking/image extensions.
+      const rawMatches = jobString.match(/[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      
+      // Filter out false positives (e.g. tracking links, image URLs)
+      const validEmails = rawMatches.filter(m => {
+        const lower = m.toLowerCase();
+        if (lower.includes("google_jobs_apply")) return false;
+        if (lower.match(/\.(png|jpg|jpeg|gif|webp)$/i)) return false;
+        if (lower.includes("sentry.io")) return false;
+        if (lower.length > 50) return false; // Emails are rarely this long
+        return true;
+      });
 
-      if (!hasDirectEmail && !descriptionHasEmail) {
-         console.log(`      ⏭  Fast Pre-Filter: No email detected. Skipping to save AI tokens.`);
+      if (validEmails.length === 0) {
+         // Silently skip jobs with absolutely no valid email footprint
          logProcessedJob(dbRecord);
          continue;
       }
 
+      // If it passed the pre-filter, NOW we announce we are processing it and do the API delay
+      console.log(`   ⚙️  Processing ${job.job_title} at ${job.employer_name}`);
       await sleep(2500); 
 
       try {

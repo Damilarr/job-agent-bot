@@ -36,7 +36,7 @@ export async function fetchJobsFromAPI(query: string, numPages: number = 1): Pro
         query: query,
         page: '1',
         num_pages: numPages.toString(),
-        date_posted: 'today' // Only fresh jobs
+        date_posted: 'today'
       },
       headers: {
         'x-rapidapi-key': selectedKey,
