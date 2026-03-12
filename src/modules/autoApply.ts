@@ -1,11 +1,12 @@
-import { fetchJobsFromAPI } from './sourcing.js';
-import type { JSearchJob } from './sourcing.js';
+import { fetchJobsFromHN, fetchJobsFromLinkedIn, fetchJobsFromX } from './sourcing.js';
+import type { Job } from './sourcing.js';
 import { parseJobDescription } from './parser.js';
 import type { ParsedJobDescription } from './parser.js';
 import { evaluateMatch } from './matcher.js';
 import { generateEmailDraft } from './drafter.js';
 import { generateCoverLetterPDF } from './coverLetter.js';
 import { sendApplicationEmail } from './email.js';
+import { autoFillApplication } from './formFiller.js';
 import { hasJobBeenProcessed, logProcessedJob, getAdminChatId } from '../data/db.js';
 import type { DBJobRecord } from '../data/db.js';
 import fs from 'fs';
@@ -14,7 +15,7 @@ import { myCV, formatCVForPrompt } from '../data/cv.js';
 import { Bot } from 'grammy';
 import { env } from '../config/env.js';
 
-const MIN_MATCH_SCORE = 80;
+const MIN_MATCH_SCORE = 60;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -33,7 +34,6 @@ export async function runAutoApplyCycle() {
   const cvText = formatCVForPrompt(myCV);
   
   // Define our search queries
-  // Can use multiple keys in .env to increase the API limit
   const queries = [
     "Remote Frontend Developer",
     "Remote React Developer",
@@ -42,67 +42,83 @@ export async function runAutoApplyCycle() {
 
   for (const query of queries) {
     console.log(`\n🔍 Searching jobs for: ${query}`);
-    const jobs = await fetchJobsFromAPI(query, 1);
     
-    for (const job of jobs) {
+    // ========================================
+    // PHASE 1: Auto-Applyable Sources (HN + X)
+    // ========================================
+    // These sources are more likely to contain emails for direct application.
+    const hnJobs = await fetchJobsFromHN(query);
+    const xJobs = await fetchJobsFromX(query);
+    
+    const applyableJobs: Job[] = [...hnJobs, ...xJobs];
+    console.log(`   📬 Applyable sources: ${applyableJobs.length} jobs (${hnJobs.length} HN, ${xJobs.length} X)`);
+
+    for (const job of applyableJobs) {
       // 1. Check if processed
-      if (hasJobBeenProcessed(job.job_id)) {
-        // Silently skip already processed jobs to keep logs incredibly clean
+      if (hasJobBeenProcessed(job.id)) {
         continue;
       }
 
       let dbRecord: DBJobRecord = {
-        id: job.job_id,
-        title: job.job_title,
-        company: job.employer_name,
-        url: job.job_apply_link,
+        id: job.id,
+        title: job.title,
+        company: job.company,
+        url: job.url,
         status: 'SKIPPED',
         matchScore: null
       };
 
       // Fast Pre-Filter: Stringify the entire job object to catch any email
       const jobString = JSON.stringify(job);
-      
-      // Stricter Regex: Ensures the text before and after the @ symbol looks like a real email,
-      // and explicitly rejects anything ending in common tracking/image extensions.
       const rawMatches = jobString.match(/[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
       
-      // Filter out false positives (e.g. tracking links, image URLs)
       const validEmails = rawMatches.filter(m => {
         const lower = m.toLowerCase();
         if (lower.includes("google_jobs_apply")) return false;
         if (lower.match(/\.(png|jpg|jpeg|gif|webp)$/i)) return false;
         if (lower.includes("sentry.io")) return false;
-        if (lower.length > 50) return false; // Emails are rarely this long
+        if (lower.length > 50) return false;
         return true;
       });
 
-      if (validEmails.length === 0) {
-         // Silently skip jobs with absolutely no valid email footprint
-         logProcessedJob(dbRecord);
-         continue;
-      }
-
-      // If it passed the pre-filter, NOW we announce we are processing it and do the API delay
-      console.log(`   ⚙️  Processing ${job.job_title} at ${job.employer_name}`);
-      await sleep(2500); 
+      console.log(`   ⚙️  Processing ${job.title} at ${job.company} [Source: ${job.source}]`);
+      await sleep(2000); 
 
       try {
-        // 2. Parse JD to find required details (and crucially, the email)
-        // Some APIs provide `job_apply_email`, but if not, we rely on the description parsing
-        const parsedJD = await parseJobDescription(job.job_description);
+        // 2. Parse JD
+        const parsedJD = await parseJobDescription(job.description);
         
-        // Merge API email if parser didn't find one
-        if (!parsedJD.applicationEmail && job.job_apply_email) {
-          parsedJD.applicationEmail = job.job_apply_email;
+        // Merge identified email if parser didn't find one but pre-filter did
+        if (!parsedJD.applicationEmail && validEmails.length > 0) {
+          parsedJD.applicationEmail = validEmails[0] || null;
         }
 
-        // We can only auto-apply if there's an email
+        // Merge API email if available
+        if (!parsedJD.applicationEmail && job.email) {
+          parsedJD.applicationEmail = job.email;
+        }
+
+        // Provide a fallback mechanism: If no email, check if it's a known form
         if (!parsedJD.applicationEmail) {
-           console.log(`      ⚠️ No application email found. Skipping.`);
+           console.log(`      ⚠️ No application email found. Attempting ATS Form Auto-Fill...`);
+           const formResult = await autoFillApplication(job.url, parsedJD);
+           
+           if (formResult.success) {
+               dbRecord.status = 'APPLIED';
+               console.log(`      🎉 ${formResult.message}`);
+               if (adminChatId) {
+                 const msg = `🚀 **Auto-Submitted ATS Form!**\n\n**Source:** ${job.source}\n**Role:** ${job.title}\n**Company:** ${job.company}\n\n✅ Successfully filled out the application form via Playwright.`;
+                 await bot.api.sendMessage(adminChatId, msg, { parse_mode: 'Markdown' });
+               }
+           } else {
+               dbRecord.status = 'FAILED';
+               console.log(`      ❌ Form auto-fill failed or unsupported ATS: ${formResult.message}`);
+           }
            logProcessedJob(dbRecord);
            continue;
         }
+
+        // --- Email Flow ---
 
         // 3. Evaluate Match
         const match = await evaluateMatch(parsedJD, cvText);
@@ -119,11 +135,11 @@ export async function runAutoApplyCycle() {
         // 4. Draft Email
         const draft = await generateEmailDraft(parsedJD, cvText, match.feedback);
 
-        // 5. Generate Cover Letter only if requested
+        // 5. Generate Cover Letter
         let coverLetterFilename: string | undefined;
         let coverLetterPath: string | undefined;
         if (parsedJD.requiresCoverLetter) {
-          console.log(`      📄 Drafted Cover Letter requested... generating.`);
+          console.log(`      📄 Drafted Cover Letter requested...`);
           coverLetterFilename = `Cover_Letter_${parsedJD.jobTitle.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
           coverLetterPath = await generateCoverLetterPDF(parsedJD, cvText, `./${coverLetterFilename}`);
         }
@@ -149,11 +165,10 @@ export async function runAutoApplyCycle() {
 
         if (emailResult.success) {
            dbRecord.status = 'APPLIED';
-           console.log(`      🎉 Successfully applied to ${job.employer_name}!`);
+           console.log(`      🎉 Successfully applied to ${job.company} via Email!`);
 
-           // Send immediate notification via Telegram
            if (adminChatId) {
-             const msg = `🚀 **Auto-Submitted Application!**\n\n**Role:** ${job.job_title}\n**Company:** ${job.employer_name}\n**Match Score:** ${match.matchScore}%\n\n✅ Email sent to ${parsedJD.applicationEmail}`;
+             const msg = `🚀 **Auto-Submitted Email Application!**\n\n**Source:** ${job.source}\n**Role:** ${job.title}\n**Company:** ${job.company}\n**Match Score:** ${match.matchScore}%\n\n✅ Email sent to ${parsedJD.applicationEmail}`;
              await bot.api.sendMessage(adminChatId, msg, { parse_mode: 'Markdown' });
            }
         } else {
@@ -161,13 +176,60 @@ export async function runAutoApplyCycle() {
            console.log(`      ❌ Failed to send email: ${emailResult.error}`);
         }
 
-      } catch (err) {
-        console.error(`      ❌ Error processing job ${job.job_id}:`, err);
+      } catch (err: any) {
+        console.error(`      ❌ Error processing job ${job.id}:`, err.message);
         dbRecord.status = 'FAILED';
       }
-
-      // Log the result to SQLite
       logProcessedJob(dbRecord);
+    }
+
+    // ========================================
+    // PHASE 2: LinkedIn Advisory (No Auto-Apply)
+    // ========================================
+    // LinkedIn jobs are surfaced as suggestions via Telegram, not auto-applied.
+    console.log(`\n   👀 Fetching LinkedIn suggestions for: ${query}`);
+    const linkedInJobs = await fetchJobsFromLinkedIn(query);
+
+    // Filter to only new, unprocessed jobs posted recently
+    const newLinkedInJobs = linkedInJobs
+      .filter(j => !hasJobBeenProcessed(j.id))
+      .slice(0, 5); // Max 5 suggestions per query
+
+    if (newLinkedInJobs.length > 0 && adminChatId) {
+      let digestMsg = `👀 **LinkedIn Job Picks for "${query}"**\n\n`;
+      digestMsg += `Found ${newLinkedInJobs.length} new job${newLinkedInJobs.length > 1 ? 's' : ''} worth checking out:\n\n`;
+
+      newLinkedInJobs.forEach((job, idx) => {
+        digestMsg += `${idx + 1}. **${job.title}** at ${job.company}`;
+        if (job.location) digestMsg += ` (${job.location})`;
+        digestMsg += `\n   🔗 [View Job](${job.url})\n\n`;
+
+        // Log as processed so we don't suggest them again
+        logProcessedJob({
+          id: job.id,
+          title: job.title,
+          company: job.company,
+          url: job.url,
+          status: 'SKIPPED', // Advisory = skipped (not applied)
+          matchScore: null,
+        });
+      });
+
+      digestMsg += `_These are suggestions only — apply manually if interested._`;
+
+      try {
+        await bot.api.sendMessage(adminChatId, digestMsg, {
+          parse_mode: 'Markdown',
+          link_preview_options: { is_disabled: true },
+        });
+        console.log(`   📨 Sent ${newLinkedInJobs.length} LinkedIn job suggestions via Telegram.`);
+      } catch (err: any) {
+        console.warn(`   ⚠️ Failed to send LinkedIn digest: ${err.message}`);
+      }
+    } else if (newLinkedInJobs.length > 0) {
+      console.log(`   📋 ${newLinkedInJobs.length} new LinkedIn jobs found but no admin chat ID for notifications.`);
+    } else {
+      console.log(`   📭 No new LinkedIn jobs to suggest for "${query}".`);
     }
   }
 

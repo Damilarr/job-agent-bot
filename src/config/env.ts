@@ -10,9 +10,13 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
   GMAIL_USER: z.string().email("GMAIL_USER must be a valid email address").min(1, "GMAIL_USER is required"),
   GMAIL_APP_PASSWORD: z.string().min(1, "GMAIL_APP_PASSWORD is required"),
-  JSEARCH_RAPIDAPI_KEY: z.string().min(1, "JSEARCH_RAPIDAPI_KEY is required for auto job hunting"),
+  // Form Auto-Fill required fields
+  PHONE_NUMBER: z.string().min(1, "PHONE_NUMBER is required for form filling"),
+  LINKEDIN_URL: z.string().url("LINKEDIN_URL must be a valid URL").min(1, "LINKEDIN_URL is required"),
+  GITHUB_URL: z.string().url("GITHUB_URL must be a valid URL").min(1, "GITHUB_URL is required"),
+  PORTFOLIO_URL: z.string().url("PORTFOLIO_URL must be a valid URL").optional(),
+  HEADLESS: z.boolean().default(true),
 });
-
 // Parse and validate the environment variables
 const parsedEnv = envSchema.safeParse(process.env);
 

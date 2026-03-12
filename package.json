@@ -4,6 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
+    "start": "node --loader ts-node/esm index.ts",
+    "start:local": "node --loader ts-node/esm run-local.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,11 +16,13 @@
     "@google/genai": "^1.44.0",
     "axios": "^1.13.6",
     "better-sqlite3": "^12.6.2",
+    "cheerio": "^1.2.0",
     "dotenv": "^17.3.1",
     "grammy": "^1.41.1",
     "md-to-pdf": "^5.2.5",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
+    "playwright-chromium": "^1.58.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
