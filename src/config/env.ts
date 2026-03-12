@@ -15,7 +15,7 @@ const envSchema = z.object({
   LINKEDIN_URL: z.string().url("LINKEDIN_URL must be a valid URL").min(1, "LINKEDIN_URL is required"),
   GITHUB_URL: z.string().url("GITHUB_URL must be a valid URL").min(1, "GITHUB_URL is required"),
   PORTFOLIO_URL: z.string().url("PORTFOLIO_URL must be a valid URL").optional(),
-  HEADLESS: z.boolean().default(true),
+  HEADLESS: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(true),
 });
 // Parse and validate the environment variables
 const parsedEnv = envSchema.safeParse(process.env);
