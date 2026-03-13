@@ -1,10 +1,10 @@
 import { config } from 'dotenv';
-import { z } from 'zod'; // We'll install zod for env validation
+import { z } from 'zod'; 
 
 // Load environment variables from .env file
 config();
 
-// Define the schema for our environment variables
+// schema for environment variables
 const envSchema = z.object({
   GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required").transform(val => val.split(',').map(k => k.trim())),
   TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
@@ -17,7 +17,6 @@ const envSchema = z.object({
   PORTFOLIO_URL: z.string().url("PORTFOLIO_URL must be a valid URL").optional(),
   HEADLESS: z.preprocess((val) => val === 'true' || val === true, z.boolean()).default(true),
 });
-// Parse and validate the environment variables
 const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
@@ -25,5 +24,4 @@ if (!parsedEnv.success) {
   process.exit(1);
 }
 
-// Export the validated environment variables
 export const env = parsedEnv.data;
