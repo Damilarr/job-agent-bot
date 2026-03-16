@@ -8,21 +8,7 @@ import { env } from '../config/env.js';
  * Initializes all background scheduled tasks.
  */
 export function startScheduler() {
-  console.log("⏰ Starting background job scheduler...");
-
-  // Run the auto-apply cycle every 4 hours during the day (8 AM, 12 PM, 4 PM) Mon-Fri
-  cron.schedule('0 8,12,16 * * 1-5', async () => {
-    try {
-      await runAutoApplyCycle();
-    } catch (err) {
-      console.error("Critical error in auto apply cron job:", err);
-    }
-  });
-
-  // End of Day Report: Runs at 5:00 PM Mon-Thu
-  cron.schedule('0 17 * * 1-4', async () => {
-    await sendEndOfDayReport();
-  });
+  console.log("⏰ Scheduler is currently disabled (auto-apply paused for multi-user upgrade).");
 }
 
 /**
