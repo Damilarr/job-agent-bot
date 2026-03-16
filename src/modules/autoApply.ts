@@ -5,9 +5,9 @@ import type { ParsedJobDescription } from './parser.js';
 import { evaluateMatch } from './matcher.js';
 import { generateEmailDraft } from './drafter.js';
 import { generateCoverLetterPDF } from './coverLetter.js';
-import { sendApplicationEmail } from './email.js';
+import { sendApplicationEmailForUser } from './email.js';
 import { autoFillApplication } from './formFiller.js';
-import { hasJobBeenProcessed, logProcessedJob, getAdminChatId } from '../data/db.js';
+import { hasJobBeenProcessed, logProcessedJob, getAdminChatId, getOrCreateUserByTelegramChat } from '../data/db.js';
 import type { DBJobRecord } from '../data/db.js';
 import fs from 'fs';
 import path from 'path';
@@ -27,6 +27,7 @@ export async function runAutoApplyCycle() {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
   // We need a chat ID to send notifications to.
   const adminChatId = getAdminChatId();
+  const adminUser = adminChatId ? getOrCreateUserByTelegramChat(parseInt(adminChatId, 10)) : null;
   if (!adminChatId) {
     console.warn("⚠️ Warning: No Admin Chat ID found in the database. Run /start on Telegram so the bot knows who to message.");
   }
@@ -144,11 +145,17 @@ export async function runAutoApplyCycle() {
           coverLetterPath = await generateCoverLetterPDF(parsedJD, cvText, `./${coverLetterFilename}`);
         }
 
-        // 6. Send Email
+        // 6. Send Email (uses admin user's connected email account)
+        if (!adminUser) {
+          console.log(`      ⚠️ No admin user; skipping email send.`);
+          logProcessedJob(dbRecord);
+          continue;
+        }
+
         const dynamicFilename = `${myCV.name.replace(/\s+/g, '_')}_${parsedJD.jobTitle.replace(/[^a-zA-Z0-9]/g, '_')}_Resume.pdf`;
         const resumeFileExists = fs.existsSync(path.resolve(process.cwd(), 'resume.pdf'));
 
-        let attachments = [];
+        const attachments = [];
         if (parsedJD.requiresResume && resumeFileExists) {
            attachments.push({ filename: dynamicFilename, path: path.resolve(process.cwd(), 'resume.pdf') });
         }
@@ -156,7 +163,7 @@ export async function runAutoApplyCycle() {
            attachments.push({ filename: coverLetterFilename, path: coverLetterPath });
         }
 
-        const emailResult = await sendApplicationEmail({
+        const emailResult = await sendApplicationEmailForUser(adminUser.id, {
           to: parsedJD.applicationEmail,
           subject: draft.subject,
           bodyText: draft.bodyText,
