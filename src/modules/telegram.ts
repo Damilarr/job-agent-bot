@@ -196,6 +196,9 @@ const pendingEmails = new Map<
 bot.command("start", async (ctx) => {
   if (!ctx.from) return;
 
+  // Refresh the bot command menu so the client shows the latest list (set_email, set_resume, etc.)
+  await refreshBotMenu();
+
   // Ensure we have a user + profile row for this Telegram chat
   await getOrCreateUserAndProfileForTelegram(
     ctx.from.id,
@@ -1034,10 +1037,24 @@ const BOT_MENU_COMMANDS = [
 ];
 
 export async function startBot() {
-  await bot.api.setMyCommands(BOT_MENU_COMMANDS);
+  try {
+    await bot.api.setMyCommands(BOT_MENU_COMMANDS);
+    console.log("📋 Bot menu commands updated.");
+  } catch (e) {
+    console.error("Failed to set bot menu commands:", e);
+  }
   bot.start();
   console.log("🤖 Job Agent Bot is running...");
 
   process.once("SIGINT", () => bot.stop());
   process.once("SIGTERM", () => bot.stop());
+}
+
+/** Call this to refresh the bot's command menu (e.g. from /start so clients see the latest list). */
+export async function refreshBotMenu() {
+  try {
+    await bot.api.setMyCommands(BOT_MENU_COMMANDS);
+  } catch (e) {
+    console.error("Failed to refresh bot menu:", e);
+  }
 }
