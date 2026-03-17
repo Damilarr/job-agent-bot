@@ -3,10 +3,12 @@ import { startScheduler } from './src/modules/scheduler.js';
 
 console.log("Starting the Job Agent Bot...");
 
-try {
-  startBot();
+async function main() {
+  await startBot();
   startScheduler();
-} catch (error) {
+}
+
+main().catch((error) => {
   console.error("Failed to start the bot:", error);
   process.exit(1);
-}
+});
