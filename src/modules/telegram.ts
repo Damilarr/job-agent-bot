@@ -10,6 +10,7 @@ import { generateCoverLetterPDF } from "./coverLetter.js";
 import { sendApplicationEmailForUser } from "./email.js";
 import { runAutoApplyCycle } from "./autoApply.js";
 import { saveAdminChatId } from "../data/db.js";
+import { autoFillGoogleForm } from "./formFiller.js";
 import {
   getOrCreateUserAndProfileForTelegram,
   getProfileTextForUserByTelegramChat,
@@ -73,6 +74,71 @@ function looksLikeJobDescription(text: string): boolean {
   const hasMultipleLines = (trimmed.match(/\n/g)?.length ?? 0) >= 2;
   return hasKeyword || hasMultipleLines || trimmed.length >= 200;
 }
+
+function extractGoogleFormUrl(text: string): string | null {
+  const m = text.match(/https?:\/\/docs\.google\.com\/forms\/[^\s)]+/i);
+  return m ? m[0] : null;
+}
+
+function extractRoles(text: string): string[] {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const roles: string[] = [];
+
+  // Look for numbered roles (1. Role — ...), especially after a "Roles:" marker.
+  let inRoles = false;
+  for (const line of lines) {
+    if (/^roles\s*:/i.test(line)) {
+      inRoles = true;
+      continue;
+    }
+    if (inRoles) {
+      const m = line.match(/^(\d+)[.)-]\s*(.+)$/);
+      if (m?.[2]) {
+        roles.push(m[2].trim());
+        continue;
+      }
+      // End roles section when we hit Location/Requirements/etc.
+      if (/^(location|requirements?|candidates?|apply|if you know|notes?)\b/i.test(line)) {
+        inRoles = false;
+      }
+    }
+  }
+
+  // Fallback: scan all lines for numbered list items that look like roles.
+  if (roles.length === 0) {
+    for (const line of lines) {
+      const m = line.match(/^(\d+)[.)-]\s*(.+)$/);
+      if (m?.[2] && /senior|developer|engineer|architect|owner|manager|designer|lead/i.test(m[2])) {
+        roles.push(m[2].trim());
+      }
+    }
+  }
+
+  // Normalize: strip trailing salary ranges etc for button labels, but keep full string
+  return roles.slice(0, 6);
+}
+
+function extractReferrerDetails(text: string): { referrerName?: string; referrerEmail?: string } {
+  const nameMatch = text.match(/input\s+my\s+name\s*[-–:]\s*([^\n.]+)/i);
+  const emailMatch = text.match(/\bmy\s+email\s+is\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
+  const referrerName = nameMatch?.[1]?.trim();
+  const referrerEmail = emailMatch?.[1]?.trim();
+  return {
+    ...(referrerName ? { referrerName } : {}),
+    ...(referrerEmail ? { referrerEmail } : {}),
+  };
+}
+
+const pendingMultiRole = new Map<
+  string,
+  {
+    rawJD: string;
+    roles: string[];
+    googleFormUrl: string | null;
+    referrerName?: string;
+    referrerEmail?: string;
+  }
+>();
 
 export const bot = new Bot<MyContext>(env.TELEGRAM_BOT_TOKEN);
 
@@ -595,6 +661,57 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
+  const roles = extractRoles(rawJD);
+  const googleFormUrl = extractGoogleFormUrl(rawJD);
+  const ref = extractReferrerDetails(rawJD);
+
+  if (googleFormUrl && roles.length <= 1) {
+    const token = `form_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const role = roles[0] || "This role";
+    pendingMultiRole.set(token, {
+      rawJD,
+      roles: [role],
+      googleFormUrl,
+      ...(ref.referrerName ? { referrerName: ref.referrerName } : {}),
+      ...(ref.referrerEmail ? { referrerEmail: ref.referrerEmail } : {}),
+    });
+
+    const keyboard = new InlineKeyboard()
+      .text("🧾 Fill Google Form (review)", `fillform_${token}_0`)
+      .text("❌ Cancel", `pickrole_cancel_${token}`);
+
+    await ctx.reply(
+      `I found a Google Form application link. Do you want me to fill it now?\n\nRole: ${role}`,
+      { reply_markup: keyboard },
+    );
+    return;
+  }
+
+  if (roles.length > 1) {
+    const token = `roles_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    pendingMultiRole.set(token, {
+      rawJD,
+      roles,
+      googleFormUrl,
+      ...(ref.referrerName ? { referrerName: ref.referrerName } : {}),
+      ...(ref.referrerEmail ? { referrerEmail: ref.referrerEmail } : {}),
+    });
+
+    const keyboard = new InlineKeyboard();
+    roles.forEach((r, idx) => {
+      const label = r.length > 40 ? `${r.slice(0, 40)}…` : r;
+      keyboard.text(label, `pickrole_${token}_${idx}`).row();
+    });
+    keyboard.text("❌ Cancel", `pickrole_cancel_${token}`);
+
+    await ctx.reply(
+      `I found multiple roles in this post. Which one do you want to apply for?\n\n` +
+        roles.map((r, i) => `${i + 1}. ${r}`).join("\n"),
+      { reply_markup: keyboard },
+    );
+    return;
+  }
+
   const statusMsg = await ctx.reply("🔍 Analyzing the job description...");
 
   try {
@@ -824,6 +941,187 @@ bot.callbackQuery("onboard_profile", async (ctx) => {
 
 bot.callbackQuery("onboard_links", async (ctx) => {
   await startSetLinks(ctx);
+  await ctx.answerCallbackQuery();
+});
+
+// Multi-role selection callbacks
+bot.callbackQuery(/^pickrole_cancel_(.+)$/, async (ctx) => {
+  const token = ctx.match[1];
+  if (token) pendingMultiRole.delete(token);
+  await ctx.editMessageText("❌ Cancelled.");
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^pickrole_(.+)_(\d+)$/, async (ctx) => {
+  const token = ctx.match[1];
+  const idx = parseInt(ctx.match[2] || "0", 10);
+  const pending = token ? pendingMultiRole.get(token) : null;
+  if (!pending) {
+    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    return;
+  }
+
+  const role = pending.roles[idx];
+  if (!role) {
+    await ctx.answerCallbackQuery({ text: "Invalid role selection.", show_alert: true });
+    return;
+  }
+
+  // If there's a Google Form link, route to form fill confirmation
+  if (pending.googleFormUrl) {
+    const keyboard = new InlineKeyboard()
+      .text("🧾 Fill Google Form (review)", `fillform_${token}_${idx}`)
+      .text("❌ Cancel", `pickrole_cancel_${token}`);
+
+    await ctx.editMessageText(
+      `Selected: **${role}**\n\nI found a Google Form application link. Do you want me to fill it now?`,
+      { parse_mode: "Markdown", reply_markup: keyboard },
+    );
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // No form link; continue with normal JD parsing by editing message and asking user to resend JD (simple path)
+  await ctx.editMessageText(
+    `Selected: **${role}**\n\nNow paste the JD again and I’ll draft the application for that role.`,
+    { parse_mode: "Markdown" },
+  );
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
+  if (!ctx.from) {
+    await ctx.answerCallbackQuery({ text: "Missing user info.", show_alert: true });
+    return;
+  }
+  const token = ctx.match[1];
+  const idx = parseInt(ctx.match[2] || "0", 10);
+  const pending = token ? pendingMultiRole.get(token) : null;
+  if (!pending || !pending.googleFormUrl) {
+    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    return;
+  }
+
+  const role = pending.roles[idx] || pending.roles[0] || "This role";
+
+  const emailAccount = await getEmailAccountForTelegramUser(
+    ctx.from.id,
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined,
+    ctx.from.username || undefined,
+  );
+
+  const links = await getLinksForTelegramUser(
+    ctx.from.id,
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined,
+    ctx.from.username || undefined,
+  );
+  const github = links.find((l) => l.label === "github")?.url;
+  const linkedin = links.find((l) => l.label === "linkedin")?.url;
+  const portfolio = links.find((l) => l.label === "portfolio")?.url;
+
+  const applicantName =
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined;
+
+  await ctx.editMessageText("🧾 Opening the Google Form and filling it out...");
+
+  const fillCtx = {
+    ...(role ? { roleTitle: role } : {}),
+    ...(applicantName ? { applicantName } : {}),
+    ...(emailAccount?.email_address ? { applicantEmail: emailAccount.email_address } : {}),
+    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
+    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
+    ...(github ? { githubUrl: github } : {}),
+    ...(linkedin ? { linkedinUrl: linkedin } : {}),
+    ...(portfolio ? { portfolioUrl: portfolio } : {}),
+  };
+
+  const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
+    submit: false,
+  });
+
+  if (result.success) {
+    const keyboard = new InlineKeyboard()
+      .text("✅ Submit now", `submitform_${token}_${idx}`)
+      .text("❌ Cancel", `pickrole_cancel_${token}`);
+    await ctx.editMessageText(`✅ ${result.message}\n\nIf everything looks correct, you can submit now.`, {
+      reply_markup: keyboard,
+    });
+  } else {
+    if (token) pendingMultiRole.delete(token);
+    await ctx.editMessageText(`❌ ${result.message}`);
+  }
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
+  if (!ctx.from) {
+    await ctx.answerCallbackQuery({ text: "Missing user info.", show_alert: true });
+    return;
+  }
+  const token = ctx.match[1];
+  const idx = parseInt(ctx.match[2] || "0", 10);
+  const pending = token ? pendingMultiRole.get(token) : null;
+  if (!pending || !pending.googleFormUrl) {
+    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    return;
+  }
+
+  const role = pending.roles[idx] || pending.roles[0] || "This role";
+
+  const emailAccount = await getEmailAccountForTelegramUser(
+    ctx.from.id,
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined,
+    ctx.from.username || undefined,
+  );
+
+  const links = await getLinksForTelegramUser(
+    ctx.from.id,
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined,
+    ctx.from.username || undefined,
+  );
+  const github = links.find((l) => l.label === "github")?.url;
+  const linkedin = links.find((l) => l.label === "linkedin")?.url;
+  const portfolio = links.find((l) => l.label === "portfolio")?.url;
+
+  const applicantName =
+    ctx.from.first_name || ctx.from.last_name
+      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
+      : undefined;
+
+  await ctx.editMessageText("✅ Submitting the Google Form now...");
+
+  const fillCtx = {
+    ...(role ? { roleTitle: role } : {}),
+    ...(applicantName ? { applicantName } : {}),
+    ...(emailAccount?.email_address
+      ? { applicantEmail: emailAccount.email_address }
+      : {}),
+    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
+    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
+    ...(github ? { githubUrl: github } : {}),
+    ...(linkedin ? { linkedinUrl: linkedin } : {}),
+    ...(portfolio ? { portfolioUrl: portfolio } : {}),
+  };
+
+  const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
+    submit: true,
+  });
+
+  if (token) pendingMultiRole.delete(token);
+
+  await ctx.editMessageText(
+    result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+  );
   await ctx.answerCallbackQuery();
 });
 
