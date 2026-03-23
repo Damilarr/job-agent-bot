@@ -115,6 +115,48 @@ export async function saveResumeForTelegramUser(
   return latest;
 }
 
+/**
+ * Parses a display/legal name from profile CV text.
+ * Expects a line like `Name: Jane Doe` (common in /set_profile and seeded CV format).
+ */
+export function extractDisplayNameFromCvText(cvText: string): string | null {
+  const m = cvText.match(/^\s*Name:\s*(.+)$/im);
+  const raw = m?.[1]?.trim();
+  return raw || null;
+}
+
+/**
+ * Prefer the name from your stored profile/CV; fall back to Telegram first/last only if no Name: line exists.
+ * Does not use Telegram @username as your legal name.
+ */
+export async function resolveApplicantDisplayNameForForms(
+  telegramChatId: number,
+  opts?: {
+    telegramFirstName?: string;
+    telegramLastName?: string;
+    name?: string;
+    username?: string;
+  }
+): Promise<string | undefined> {
+  const { user, profile } = await getOrCreateUserAndProfileForTelegram(
+    telegramChatId,
+    opts?.name,
+    opts?.username
+  );
+  const fromCv = extractDisplayNameFromCvText(profile.cv_text);
+  if (fromCv) return fromCv;
+
+  const tg = [opts?.telegramFirstName, opts?.telegramLastName]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (tg) return tg;
+
+  if (user.name?.trim()) return user.name.trim();
+
+  return undefined;
+}
+
 export async function getLatestResumePathForTelegramUser(
   telegramChatId: number,
   name?: string,

@@ -10,8 +10,8 @@ import { autoFillApplication } from './formFiller.js';
 import { hasJobBeenProcessed, logProcessedJob, getAdminChatId, getOrCreateUserByTelegramChat } from '../data/db.js';
 import type { DBJobRecord } from '../data/db.js';
 import fs from 'fs';
-import path from 'path';
 import { myCV, formatCVForPrompt } from '../data/cv.js';
+import { getLatestResumePathForTelegramUser } from '../data/profile.js';
 import { Bot } from 'grammy';
 import { env } from '../config/env.js';
 
@@ -153,11 +153,16 @@ export async function runAutoApplyCycle() {
         }
 
         const dynamicFilename = `${myCV.name.replace(/\s+/g, '_')}_${parsedJD.jobTitle.replace(/[^a-zA-Z0-9]/g, '_')}_Resume.pdf`;
-        const resumeFileExists = fs.existsSync(path.resolve(process.cwd(), 'resume.pdf'));
+        const resumePath =
+          adminUser.telegram_chat_id != null
+            ? await getLatestResumePathForTelegramUser(adminUser.telegram_chat_id)
+            : null;
+        const resumeFileExists =
+          resumePath !== null && fs.existsSync(resumePath);
 
         const attachments = [];
-        if (parsedJD.requiresResume && resumeFileExists) {
-           attachments.push({ filename: dynamicFilename, path: path.resolve(process.cwd(), 'resume.pdf') });
+        if (parsedJD.requiresResume && resumeFileExists && resumePath) {
+          attachments.push({ filename: dynamicFilename, path: resumePath });
         }
         if (parsedJD.requiresCoverLetter && coverLetterFilename && coverLetterPath) {
            attachments.push({ filename: coverLetterFilename, path: coverLetterPath });

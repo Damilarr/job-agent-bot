@@ -14,7 +14,10 @@ import {
   logUserEvent,
   saveAdminChatId,
 } from "../data/db.js";
-import { autoFillGoogleForm } from "./formFiller.js";
+import {
+  autoFillGoogleForm,
+  type GoogleFormFillContext,
+} from "./formFiller.js";
 import {
   getOrCreateUserAndProfileForTelegram,
   getProfileTextForUserByTelegramChat,
@@ -26,9 +29,11 @@ import {
   getLinksForTelegramUser,
   upsertEmailAccountForTelegramUser,
   getEmailAccountForTelegramUser,
+  resolveApplicantDisplayNameForForms,
 } from "../data/profile.js";
 import fs from "fs";
 import path from "path";
+import { tmpdir } from "os";
 
 // Define the bot and store data temporarily in memory for the callback
 interface SessionData {
@@ -199,16 +204,162 @@ function extractReferrerDetails(text: string): {
   };
 }
 
-const pendingMultiRole = new Map<
-  string,
-  {
-    rawJD: string;
-    roles: string[];
-    googleFormUrl: string | null;
-    referrerName?: string;
-    referrerEmail?: string;
+export type PendingGoogleFormSession = {
+  rawJD: string;
+  roles: string[];
+  googleFormUrl: string | null;
+  referrerName?: string;
+  referrerEmail?: string;
+  formAttachmentPaths?: { resumePath?: string; coverLetterPath?: string };
+};
+
+const pendingMultiRole = new Map<string, PendingGoogleFormSession>();
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function resolveResumePathForUser(
+  telegramChatId: number,
+  from: { first_name?: string; last_name?: string; username?: string },
+): Promise<string | undefined> {
+  const tgName =
+    from.first_name || from.last_name
+      ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
+      : undefined;
+  const userPath = await getLatestResumePathForTelegramUser(
+    telegramChatId,
+    tgName,
+    from.username,
+  );
+  if (userPath && fs.existsSync(userPath)) return userPath;
+  return undefined;
+}
+
+/** Generates a cover letter PDF when the JD asks for one (or mentions cover letter). */
+async function maybeGenerateCoverLetterForGoogleForm(
+  rawJD: string,
+  roleTitle: string,
+  cvText: string,
+): Promise<string | undefined> {
+  let jobData: ParsedJobDescription;
+  try {
+    jobData = await parseJobDescription(rawJD);
+  } catch {
+    return undefined;
   }
->();
+  const wantsCover =
+    jobData.requiresCoverLetter ||
+    /cover\s*letter|covering\s*letter|cv\s+and\s+cover|resume\s+and\s+cover/i.test(
+      rawJD,
+    );
+  if (!wantsCover) return undefined;
+  const safe = (jobData.jobTitle || roleTitle || "Application").replace(
+    /[^a-zA-Z0-9]/g,
+    "_",
+  );
+  const out = path.join(tmpdir(), `cl_gform_${safe}_${Date.now()}.pdf`);
+  return generateCoverLetterPDF(jobData, cvText, out);
+}
+
+async function buildGoogleFormFillContext(
+  pending: PendingGoogleFormSession,
+  telegramChatId: number,
+  from: { first_name?: string; last_name?: string; username?: string },
+  role: string,
+  opts: { reuseCachedAttachments: boolean },
+): Promise<{
+  fillCtx: GoogleFormFillContext;
+  applicantDisplayName: string | undefined;
+  resumePath: string | undefined;
+  coverLetterPath: string | undefined;
+}> {
+  const tgName =
+    from.first_name || from.last_name
+      ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
+      : undefined;
+
+  const cvText = await getProfileTextForUserByTelegramChat(
+    telegramChatId,
+    tgName,
+    from.username,
+  );
+
+  const applicantDisplayName = await resolveApplicantDisplayNameForForms(
+    telegramChatId,
+    {
+      ...(tgName !== undefined ? { name: tgName } : {}),
+      ...(from.first_name !== undefined
+        ? { telegramFirstName: from.first_name }
+        : {}),
+      ...(from.last_name !== undefined
+        ? { telegramLastName: from.last_name }
+        : {}),
+      ...(from.username !== undefined ? { username: from.username } : {}),
+    },
+  );
+
+  const emailAccount = await getEmailAccountForTelegramUser(
+    telegramChatId,
+    tgName,
+    from.username,
+  );
+
+  const links = await getLinksForTelegramUser(
+    telegramChatId,
+    tgName,
+    from.username,
+  );
+  const github = links.find((l) => l.label === "github")?.url;
+  const linkedin = links.find((l) => l.label === "linkedin")?.url;
+  const portfolio = links.find((l) => l.label === "portfolio")?.url;
+
+  let resumePath: string | undefined;
+  let coverLetterPath: string | undefined;
+
+  if (opts.reuseCachedAttachments && pending.formAttachmentPaths) {
+    const r = pending.formAttachmentPaths.resumePath;
+    const c = pending.formAttachmentPaths.coverLetterPath;
+    if (r && fs.existsSync(r)) resumePath = r;
+    if (c && fs.existsSync(c)) coverLetterPath = c;
+  }
+
+  if (!resumePath) {
+    resumePath = await resolveResumePathForUser(telegramChatId, from);
+  }
+  if (!coverLetterPath) {
+    coverLetterPath = await maybeGenerateCoverLetterForGoogleForm(
+      pending.rawJD,
+      role,
+      cvText,
+    );
+  }
+
+  const fillCtx: GoogleFormFillContext = {
+    ...(role ? { roleTitle: role } : {}),
+    ...(applicantDisplayName ? { applicantName: applicantDisplayName } : {}),
+    ...(emailAccount?.email_address
+      ? { applicantEmail: emailAccount.email_address }
+      : {}),
+    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
+    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
+    ...(github ? { githubUrl: github } : {}),
+    ...(linkedin ? { linkedinUrl: linkedin } : {}),
+    ...(portfolio ? { portfolioUrl: portfolio } : {}),
+    ...(resumePath ? { resumePath } : {}),
+    ...(coverLetterPath ? { coverLetterPath } : {}),
+  };
+
+  return {
+    fillCtx,
+    applicantDisplayName,
+    resumePath,
+    coverLetterPath,
+  };
+}
 
 export const bot = new Bot<MyContext>(env.TELEGRAM_BOT_TOKEN);
 
@@ -942,16 +1093,24 @@ bot.on("message:text", async (ctx) => {
 
       keyboard.text("📝 Edit Draft", `edit_${actionId}`);
 
-      const resumeFileExists = fs.existsSync("./resume.pdf");
+      const userResumePath = await getLatestResumePathForTelegramUser(
+        telegramChatId,
+        from.first_name || from.last_name
+          ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
+          : undefined,
+        from.username || undefined,
+      );
+      const resumeFileExists =
+        userResumePath !== null && fs.existsSync(userResumePath);
 
       replyText += `\n\n📎 *Attachments ready:*\n`;
 
       if (jobData.requiresResume) {
         if (resumeFileExists) {
-          replyText += `- \`${dynamicFilename}\` (from global resume.pdf)\n`;
+          replyText += `- \`${dynamicFilename}\` (from your /set_resume upload)\n`;
           keyboard.text("✏️ Rename Resume", `rename_${actionId}`).row();
         } else {
-          replyText += `⚠️ *No Resume Found:* The JD requested a resume. Upload one via /set_resume or place a \`resume.pdf\` file in the project root folder.\n`;
+          replyText += `⚠️ *No Resume Found:* The JD requested a resume. Upload one via /set_resume.\n`;
         }
       } else {
         replyText += `- Resume skipped (Not requested by JD)\n`;
@@ -1140,68 +1299,66 @@ bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
   }
 
   const role = pending.roles[idx] || pending.roles[0] || "This role";
+  const from = ctx.from;
 
-  const emailAccount = await getEmailAccountForTelegramUser(
-    ctx.from.id,
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined,
-    ctx.from.username || undefined,
+  await ctx.editMessageText(
+    "🧾 Preparing profile, resume, cover letter (if needed), and opening the form…",
   );
 
-  const links = await getLinksForTelegramUser(
-    ctx.from.id,
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined,
-    ctx.from.username || undefined,
-  );
-  const github = links.find((l) => l.label === "github")?.url;
-  const linkedin = links.find((l) => l.label === "linkedin")?.url;
-  const portfolio = links.find((l) => l.label === "portfolio")?.url;
+  const { fillCtx, resumePath, coverLetterPath } =
+    await buildGoogleFormFillContext(
+      pending,
+      from.id,
+      {
+        ...(from.first_name !== undefined
+          ? { first_name: from.first_name }
+          : {}),
+        ...(from.last_name !== undefined ? { last_name: from.last_name } : {}),
+        ...(from.username !== undefined ? { username: from.username } : {}),
+      },
+      role,
+      { reuseCachedAttachments: false },
+    );
 
-  const applicantName =
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined;
-
-  await ctx.editMessageText("🧾 Opening the Google Form and filling it out...");
-
-  const fillCtx = {
-    ...(role ? { roleTitle: role } : {}),
-    ...(applicantName ? { applicantName } : {}),
-    ...(emailAccount?.email_address
-      ? { applicantEmail: emailAccount.email_address }
-      : {}),
-    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
-    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
-    ...(github ? { githubUrl: github } : {}),
-    ...(linkedin ? { linkedinUrl: linkedin } : {}),
-    ...(portfolio ? { portfolioUrl: portfolio } : {}),
-  };
+  if (token) {
+    pendingMultiRole.set(token, {
+      ...pending,
+      formAttachmentPaths: {
+        ...(resumePath !== undefined ? { resumePath } : {}),
+        ...(coverLetterPath !== undefined ? { coverLetterPath } : {}),
+      },
+    });
+  }
 
   const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
     submit: false,
   });
 
   if (result.success) {
+    const fields = result.filledFields ?? [];
     const filledSummary =
-      `**Filled values (review):**\n` +
-      `- Role: ${role}\n` +
-      `- Applicant name: ${applicantName || "_not set_"}\n` +
-      `- Applicant email: ${emailAccount?.email_address || "_not set_"}\n` +
-      `- Referrer name: ${pending.referrerName || "_not detected_"}\n` +
-      `- Referrer email: ${pending.referrerEmail || "_not detected_"}\n` +
-      `- GitHub: ${github || "_not set_"}\n` +
-      `- LinkedIn: ${linkedin || "_not set_"}\n` +
-      `- Portfolio: ${portfolio || "_not set_"}\n`;
+      fields.length > 0
+        ? fields
+            .map(
+              (f) =>
+                `• <b>${escapeHtml(f.label)}</b>\n  → ${escapeHtml(f.value)}`,
+            )
+            .join("\n")
+        : "";
+
+    const hintEmpty =
+      fields.length === 0
+        ? "\n\n<i>No questions on this form were matched to your profile.</i> Open the form, complete missing items manually, or update <code>/set_profile</code> (include a <code>Name:</code> line) and <code>/set_resume</code>."
+        : "";
 
     const keyboard = new InlineKeyboard()
       .text("✅ Submit now", `submitform_${token}_${idx}`)
       .text("❌ Cancel", `pickrole_cancel_${token}`);
     await ctx.editMessageText(
-      `✅ ${result.message}\n\n${filledSummary}\nIf everything looks correct, you can submit now.`,
-      { parse_mode: "Markdown", reply_markup: keyboard },
+      `✅ ${escapeHtml(result.message)}\n\n<b>Form fields we filled</b>\n${
+        filledSummary || "<i>(none)</i>"
+      }${hintEmpty}\n\nIf everything looks correct, you can submit now.`,
+      { parse_mode: "HTML", reply_markup: keyboard },
     );
   } else {
     if (token) pendingMultiRole.delete(token);
@@ -1230,45 +1387,23 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
   }
 
   const role = pending.roles[idx] || pending.roles[0] || "This role";
-
-  const emailAccount = await getEmailAccountForTelegramUser(
-    ctx.from.id,
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined,
-    ctx.from.username || undefined,
-  );
-
-  const links = await getLinksForTelegramUser(
-    ctx.from.id,
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined,
-    ctx.from.username || undefined,
-  );
-  const github = links.find((l) => l.label === "github")?.url;
-  const linkedin = links.find((l) => l.label === "linkedin")?.url;
-  const portfolio = links.find((l) => l.label === "portfolio")?.url;
-
-  const applicantName =
-    ctx.from.first_name || ctx.from.last_name
-      ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-      : undefined;
+  const from = ctx.from;
 
   await ctx.editMessageText("✅ Submitting the Google Form now...");
 
-  const fillCtx = {
-    ...(role ? { roleTitle: role } : {}),
-    ...(applicantName ? { applicantName } : {}),
-    ...(emailAccount?.email_address
-      ? { applicantEmail: emailAccount.email_address }
-      : {}),
-    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
-    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
-    ...(github ? { githubUrl: github } : {}),
-    ...(linkedin ? { linkedinUrl: linkedin } : {}),
-    ...(portfolio ? { portfolioUrl: portfolio } : {}),
-  };
+  const { fillCtx } = await buildGoogleFormFillContext(
+    pending,
+    from.id,
+    {
+      ...(from.first_name !== undefined
+        ? { first_name: from.first_name }
+        : {}),
+      ...(from.last_name !== undefined ? { last_name: from.last_name } : {}),
+      ...(from.username !== undefined ? { username: from.username } : {}),
+    },
+    role,
+    { reuseCachedAttachments: true },
+  );
 
   const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
     submit: true,
@@ -1406,7 +1541,6 @@ bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
       });
     }
 
-    // Try user-specific resume first, then fall back to global resume.pdf
     let resumePath: string | null = null;
     if (pending.userId && ctx.from) {
       resumePath = await getLatestResumePathForTelegramUser(
@@ -1416,13 +1550,6 @@ bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
           : undefined,
         ctx.from.username || undefined,
       );
-    }
-
-    if (
-      !resumePath &&
-      fs.existsSync(path.resolve(process.cwd(), "resume.pdf"))
-    ) {
-      resumePath = path.resolve(process.cwd(), "resume.pdf");
     }
 
     if (resumePath) {
@@ -1500,15 +1627,9 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
       });
     }
 
-    let resumePath: string | null = await getLatestResumePathForTelegramUser(
+    const resumePath: string | null = await getLatestResumePathForTelegramUser(
       ctx.from.id,
     );
-    if (
-      !resumePath &&
-      fs.existsSync(path.resolve(process.cwd(), "resume.pdf"))
-    ) {
-      resumePath = path.resolve(process.cwd(), "resume.pdf");
-    }
     if (resumePath) {
       const finalName = pending.customResumeName || "resume.pdf";
       attachments.push({ filename: finalName, path: resumePath });

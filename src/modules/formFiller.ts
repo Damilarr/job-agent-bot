@@ -4,10 +4,22 @@ import { aiService } from "../services/ai.js";
 import type { ParsedJobDescription } from "./parser.js";
 import { formatCVForPrompt, myCV } from "../data/cv.js";
 import path from "path";
+import fs from "fs";
+
+/** One row for the review: a question on the form and what we used */
+export interface GoogleFormFilledField {
+  label: string;
+  value: string;
+  kind: "text" | "file" | "radio" | "select";
+}
 
 export interface FormFillResult {
   success: boolean;
   message: string;
+  /** Best-effort: whether file inputs were satisfied */
+  fileUploads?: { resume: boolean; coverLetter: boolean };
+  /** Only fields on the form that we matched and filled (or uploaded) */
+  filledFields?: GoogleFormFilledField[];
 }
 
 export interface GoogleFormFillContext {
@@ -20,10 +32,20 @@ export interface GoogleFormFillContext {
   githubUrl?: string;
   linkedinUrl?: string;
   portfolioUrl?: string;
+  /** Absolute paths for Google Forms file-upload questions */
+  resumePath?: string;
+  coverLetterPath?: string;
 }
 
 export interface GoogleFormFillOptions {
   submit?: boolean;
+}
+
+function sanitizeGoogleFormQuestionLabel(raw: string): string {
+  let t = raw.replace(/\s+/g, " ").trim();
+  t = t.replace(/\s*\*\s*Required\s*$/i, "").replace(/\s*Required\s*$/i, "").trim();
+  const firstLine = t.split("\n").find((l) => l.trim().length > 0) ?? t;
+  return firstLine.slice(0, 200);
 }
 
 /**
@@ -123,6 +145,9 @@ export async function autoFillGoogleForm(
   options: GoogleFormFillOptions = {},
 ): Promise<FormFillResult> {
   let browser;
+  let uploadedResume = false;
+  let uploadedCover = false;
+  const filledFields: GoogleFormFilledField[] = [];
   try {
     if (!/https?:\/\/docs\.google\.com\/forms\//i.test(url)) {
       return { success: false, message: `Not a Google Forms URL: ${url}` };
@@ -141,6 +166,90 @@ export async function autoFillGoogleForm(
     // Some forms load within an iframe; in most cases the main page is enough.
     const activePage = page;
 
+    const fillFileInputsOnPage = async () => {
+      const fileInputs = activePage.locator('input[type="file"]');
+      const n = await fileInputs.count();
+      let resumeSlotUsed = false;
+      let coverSlotUsed = false;
+
+      for (let i = 0; i < n; i++) {
+        const input = fileInputs.nth(i);
+        const container = input.locator(
+          'xpath=ancestor::*[@role="listitem"][1]',
+        );
+        const qRaw = (await container.textContent().catch(() => "")) || "";
+        const label = sanitizeGoogleFormQuestionLabel(qRaw);
+        const qText = qRaw.toLowerCase();
+
+        const looksCover =
+          /\b(cover\s*letter|covering\s*letter)\b/i.test(qText) ||
+          (/\bcover\b/i.test(qText) &&
+            /\b(upload|file|attach|pdf)\b/i.test(qText));
+        const looksCv =
+          /\b(cv|curriculum|vitae|résumé|resumé)\b/i.test(qText) ||
+          (/\bresume\b/i.test(qText) && !/\bcover\b/i.test(qText));
+
+        let filePath: string | null = null;
+
+        if (
+          looksCover &&
+          ctx.coverLetterPath &&
+          fs.existsSync(ctx.coverLetterPath)
+        ) {
+          filePath = ctx.coverLetterPath;
+        } else if (looksCv && ctx.resumePath && fs.existsSync(ctx.resumePath)) {
+          filePath = ctx.resumePath;
+        } else {
+          // Unlabeled or generic: first file field → resume, second → cover letter
+          if (
+            !resumeSlotUsed &&
+            ctx.resumePath &&
+            fs.existsSync(ctx.resumePath)
+          ) {
+            filePath = ctx.resumePath;
+            resumeSlotUsed = true;
+          } else if (
+            !coverSlotUsed &&
+            ctx.coverLetterPath &&
+            fs.existsSync(ctx.coverLetterPath)
+          ) {
+            filePath = ctx.coverLetterPath;
+            coverSlotUsed = true;
+          }
+        }
+
+        if (!filePath) continue;
+
+        try {
+          await input.setInputFiles(filePath);
+          if (filePath === ctx.resumePath) uploadedResume = true;
+          if (filePath === ctx.coverLetterPath) uploadedCover = true;
+          const display =
+            path.basename(filePath) ||
+            (filePath === ctx.resumePath ? "Resume" : "Cover letter");
+          filledFields.push({
+            label: label || "File upload",
+            value: display,
+            kind: "file",
+          });
+        } catch {
+          // hidden inputs / permission — ignore
+        }
+      }
+    };
+
+    const locateSubmitButton = () =>
+      activePage
+        .locator(
+          [
+            'div[role="button"]:has-text("Submit")',
+            'span:has-text("Submit")',
+            'button:has-text("Submit")',
+            '[jsname]:has-text("Submit")',
+          ].join(", "),
+        )
+        .first();
+
     const fillInputsOnPage = async () => {
       const inputs = activePage.locator(
         'input[type="text"], input[type="email"], input[type="url"], input[type="tel"], textarea, input:not([type])',
@@ -155,8 +264,9 @@ export async function autoFillGoogleForm(
         const container = input.locator(
           'xpath=ancestor::*[@role="listitem"][1]',
         );
-        const qText = (await container.textContent().catch(() => "")) || "";
-        const combined = `${aria}\n${qText}`.toLowerCase();
+        const qTextRaw = (await container.textContent().catch(() => "")) || "";
+        const questionLabel = sanitizeGoogleFormQuestionLabel(qTextRaw);
+        const combined = `${aria}\n${qTextRaw}`.toLowerCase();
 
         const pick = (): string | null => {
           const email = ctx.applicantEmail || ctx.referrerEmail || null;
@@ -186,13 +296,16 @@ export async function autoFillGoogleForm(
           )
             return ctx.referrerEmail;
 
-          if (
-            (combined.includes("full name") ||
-              combined.includes("your name") ||
-              combined.includes("name")) &&
-            ctx.applicantName
-          )
-            return ctx.applicantName;
+          const looksApplicantName =
+            /\b(applicant|your)\s+name\b/i.test(combined) ||
+            /\bfull\s+name\b/i.test(combined) ||
+            /\byour\s+name\b/i.test(combined) ||
+            (/\bname\b/i.test(combined) &&
+              !/\b(company|business|firm|referrer|username|user\s+name)\b/i.test(
+                combined,
+              ));
+
+          if (looksApplicantName && ctx.applicantName) return ctx.applicantName;
           if (
             (combined.includes("email") || combined.includes("e-mail")) &&
             email
@@ -215,6 +328,11 @@ export async function autoFillGoogleForm(
         if (!val) continue;
 
         await input.fill(val).catch(() => undefined);
+        filledFields.push({
+          label: questionLabel || "Question",
+          value: val,
+          kind: "text",
+        });
       }
     };
 
@@ -228,6 +346,17 @@ export async function autoFillGoogleForm(
         const t = ((await r.textContent().catch(() => "")) || "").toLowerCase();
         if (t.includes(roleLower) || roleLower.includes(t)) {
           await r.click({ force: true }).catch(() => undefined);
+          const listItem = r.locator(
+            'xpath=ancestor::*[@role="listitem"][1]',
+          );
+          const qRaw =
+            (await listItem.textContent().catch(() => "")) || "";
+          const label = sanitizeGoogleFormQuestionLabel(qRaw);
+          filledFields.push({
+            label: label || "Choice",
+            value: ctx.roleTitle,
+            kind: "radio",
+          });
           return;
         }
       }
@@ -265,6 +394,17 @@ export async function autoFillGoogleForm(
             .first()
             .click({ force: true })
             .catch(() => undefined);
+          const qRaw =
+            (await s
+              .locator('xpath=ancestor::*[@role="listitem"][1]')
+              .textContent()
+              .catch(() => "")) || "";
+          const label = sanitizeGoogleFormQuestionLabel(qRaw);
+          filledFields.push({
+            label: label || "Role / position",
+            value: ctx.roleTitle,
+            kind: "select",
+          });
           return;
         }
         await activePage.keyboard.press("Escape").catch(() => undefined);
@@ -274,32 +414,42 @@ export async function autoFillGoogleForm(
     const shouldSubmit = options.submit === true;
 
     // Multi-page forms: keep clicking Next if present, then stop at Submit (review) or click Submit (submit mode).
+    const fileSummary = () => ({
+      resume: uploadedResume,
+      coverLetter: uploadedCover,
+    });
+
+    const withFields = (base: FormFillResult): FormFillResult => ({
+      ...base,
+      filledFields: [...filledFields],
+      fileUploads: fileSummary(),
+    });
+
     for (let step = 0; step < 6; step++) {
       await fillInputsOnPage();
+      await fillFileInputsOnPage();
       await tryPickRoleRadio();
       await tryPickRoleSelect();
 
       const nextBtn = activePage
         .locator('div[role="button"]:has-text("Next")')
         .first();
-      const submitBtn = activePage
-        .locator('div[role="button"]:has-text("Submit")')
-        .first();
+      const submitBtn = locateSubmitButton();
 
       if (await submitBtn.isVisible().catch(() => false)) {
         if (shouldSubmit) {
           await submitBtn.click({ force: true }).catch(() => undefined);
           await activePage.waitForTimeout(1500);
-          return {
+          return withFields({
             success: true,
             message: "Submitted Google Form successfully.",
-          };
+          });
         }
-        return {
+        return withFields({
           success: true,
           message:
             "Filled Google Form and stopped at review (Submit button is ready).",
-        };
+        });
       }
 
       if (await nextBtn.isVisible().catch(() => false)) {
@@ -309,14 +459,17 @@ export async function autoFillGoogleForm(
       }
 
       // No next/submit found – we did our best.
-      return {
+      return withFields({
         success: true,
         message:
           "Filled Google Form fields (could not find Submit button to finalize).",
-      };
+      });
     }
 
-    return { success: false, message: "Google Form flow exceeded max steps." };
+    return withFields({
+      success: false,
+      message: "Google Form flow exceeded max steps.",
+    });
   } catch (error: any) {
     console.error("      ❌ Error during Google Form autofill:", error);
     return { success: false, message: `Playwright error: ${error.message}` };
@@ -383,7 +536,7 @@ async function handleGreenhouseForm(
     'input[name="last_name"]',
     myCV.name.split(" ").slice(1).join(" ") || "",
   );
-  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER);
+  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER ?? "");
   await fillInputIfExists(page, 'input[name="phone"]', env.PHONE_NUMBER);
 
   const fileInput = page.locator('input[type="file"]').first();
@@ -472,7 +625,7 @@ async function handleLeverForm(
   }
 
   await fillInputIfExists(page, 'input[name="name"]', myCV.name);
-  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER);
+  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER ?? "");
   await fillInputIfExists(page, 'input[name="phone"]', env.PHONE_NUMBER);
   await fillInputIfExists(page, 'input[name="org"]', "Self");
 
