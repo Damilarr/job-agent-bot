@@ -11,7 +11,12 @@ import { hasJobBeenProcessed, logProcessedJob, getAdminChatId, getOrCreateUserBy
 import type { DBJobRecord } from '../data/db.js';
 import fs from 'fs';
 import { myCV, formatCVForPrompt } from '../data/cv.js';
-import { getLatestResumePathForTelegramUser } from '../data/profile.js';
+import {
+  getLatestResumePathForTelegramUser,
+  getLinksForTelegramUser,
+  resolveApplicantDisplayNameForForms,
+} from '../data/profile.js';
+import type { DraftContext } from './drafter.js';
 import { Bot } from 'grammy';
 import { env } from '../config/env.js';
 
@@ -133,14 +138,30 @@ export async function runAutoApplyCycle() {
 
         console.log(`      ✅ Match Score: ${match.matchScore}%. Generating application...`);
 
-        // 4. Draft Email
-        const draft = await generateEmailDraft(parsedJD, cvText, match.feedback);
+        // 4. Resolve links + name for draft context
+        let autoDraftCtx: DraftContext = {};
+        if (adminUser && adminUser.telegram_chat_id != null) {
+          const links = await getLinksForTelegramUser(adminUser.telegram_chat_id);
+          const dispName = await resolveApplicantDisplayNameForForms(adminUser.telegram_chat_id);
+          const gh = links.find((l) => l.label === 'github')?.url;
+          const li = links.find((l) => l.label === 'linkedin')?.url;
+          const pf = links.find((l) => l.label === 'portfolio')?.url;
+          autoDraftCtx = {
+            ...(gh ? { githubUrl: gh } : {}),
+            ...(li ? { linkedinUrl: li } : {}),
+            ...(pf ? { portfolioUrl: pf } : {}),
+            ...(dispName ? { applicantName: dispName } : {}),
+          };
+        }
 
-        // 5. Generate Cover Letter
+        const draft = await generateEmailDraft(parsedJD, cvText, match.feedback, autoDraftCtx);
+
+        // 5. Generate Cover Letter (always for email applications)
         let coverLetterFilename: string | undefined;
         let coverLetterPath: string | undefined;
-        if (parsedJD.requiresCoverLetter) {
-          console.log(`      📄 Drafted Cover Letter requested...`);
+        const shouldGenCover = parsedJD.requiresCoverLetter || !!parsedJD.applicationEmail;
+        if (shouldGenCover) {
+          console.log(`      📄 Generating Cover Letter...`);
           coverLetterFilename = `Cover_Letter_${parsedJD.jobTitle.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
           coverLetterPath = await generateCoverLetterPDF(parsedJD, cvText, `./${coverLetterFilename}`);
         }
@@ -161,11 +182,11 @@ export async function runAutoApplyCycle() {
           resumePath !== null && fs.existsSync(resumePath);
 
         const attachments = [];
-        if (parsedJD.requiresResume && resumeFileExists && resumePath) {
+        if (resumeFileExists && resumePath) {
           attachments.push({ filename: dynamicFilename, path: resumePath });
         }
-        if (parsedJD.requiresCoverLetter && coverLetterFilename && coverLetterPath) {
-           attachments.push({ filename: coverLetterFilename, path: coverLetterPath });
+        if (coverLetterFilename && coverLetterPath) {
+          attachments.push({ filename: coverLetterFilename, path: coverLetterPath });
         }
 
         const emailResult = await sendApplicationEmailForUser(adminUser.id, {

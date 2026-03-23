@@ -34,11 +34,11 @@ const responseSchema = {
     },
     requiresCoverLetter: {
       type: Type.BOOLEAN,
-      description: "True if the job explicitly requests a cover letter. False otherwise."
+      description: "True if the job requests or would benefit from a cover letter. For email applications, default to true unless it's clearly a quick referral."
     },
     requiresResume: {
       type: Type.BOOLEAN,
-      description: "True if the job explicitly requests a resume or CV. False otherwise."
+      description: "True if this is a job application where attaching a resume would be expected. This includes any role where an application email is provided. Only false for informal referral requests or info-gathering forms."
     }
   },
   required: ["jobTitle", "keySkills", "requiredExperience"]
@@ -66,11 +66,12 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
     
     Extract the following details:
     1. Job Title.
-    2. Key Skills (as a list).
-    3. Required Experience level.
-    4. The Application Email address (if it exists).
-    5. Whether a Cover Letter is requested.
-    6. Whether a Resume/CV is requested.
+    2. Company Name — if not stated explicitly, try to infer it from the application email domain (e.g. admin@hotspotsbeauty.com → HotSpotsBeauty). Return null ONLY if truly unidentifiable.
+    3. Key Skills (as a list).
+    4. Required Experience level.
+    5. The Application Email address (if it exists).
+    6. Whether a Resume/CV should be attached — for any real job application (especially when an email is provided to send the application to), default to TRUE. Only set false for informal referral requests or info forms.
+    7. Whether a Cover Letter should be included — for any direct email application to a company, default to TRUE. Only set false for quick referral pings or forms.
 
     Here is the job description:
     ---
@@ -96,6 +97,20 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
     }
 
     const parsedData: ParsedJobDescription = JSON.parse(resultText);
+
+    if (!parsedData.companyName && parsedData.applicationEmail) {
+      const domain = parsedData.applicationEmail.split("@")[1];
+      if (domain && !/(gmail|yahoo|outlook|hotmail|proton|icloud)\./i.test(domain)) {
+        const namePart = domain.split(".")[0] ?? "";
+        parsedData.companyName =
+          namePart.charAt(0).toUpperCase() + namePart.slice(1);
+      }
+    }
+
+    if (parsedData.applicationEmail && !parsedData.requiresResume) {
+      parsedData.requiresResume = true;
+    }
+
     return parsedData;
   } catch (error) {
     console.error("Error parsing job description:", error);

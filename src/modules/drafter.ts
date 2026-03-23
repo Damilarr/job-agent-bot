@@ -23,14 +23,31 @@ export interface EmailDraft {
   bodyText: string;
 }
 
+export interface DraftContext {
+  /** User's real links, resolved from /set_links */
+  githubUrl?: string;
+  linkedinUrl?: string;
+  portfolioUrl?: string;
+  applicantName?: string;
+}
+
 /**
  * Generates an email draft customized to the job description and candidate's CV.
  */
 export async function generateEmailDraft(
   jobData: ParsedJobDescription,
   cvText: string,
-  feedback?: string
+  feedback?: string,
+  draftCtx?: DraftContext,
 ): Promise<EmailDraft> {
+  const linksBlock = [
+    draftCtx?.portfolioUrl ? `Portfolio: ${draftCtx.portfolioUrl}` : null,
+    draftCtx?.githubUrl ? `GitHub: ${draftCtx.githubUrl}` : null,
+    draftCtx?.linkedinUrl ? `LinkedIn: ${draftCtx.linkedinUrl}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n    ");
+
   const prompt = `
     You are an expert career advisor and professional copywriter.
     I will provide you with a candidate's Master CV, the parsed details of a job opportunity, and some optional context feedback.
@@ -43,8 +60,10 @@ export async function generateEmailDraft(
     3. Keep it ultra-short. Maximum 3-4 sentences (under 50 words). 
     4. Start normally (e.g., "Hi Team,", "Hi there,", or just "Hello,").
     5. Directly mention 1 specific skill/achievement from my CV that proves I can do what they need.
-    6. Include my portfolio link (from the CV) naturally in the text.
+    6. You MUST use the EXACT links provided below — do NOT invent, shorten, or substitute any URL.${linksBlock ? ` Include my portfolio link naturally in the text.` : ""}
     7. Be confident and direct, not overly polite or desperate.
+    8. If a company name is provided, mention it once naturally (e.g., "at [Company]").
+    9. Reference at least one specific responsibility or requirement from the JD to show you read it.
     ${feedback ? `\n    Context/Feedback provided: ${feedback}` : ""}
 
     Candidate CV:
@@ -52,11 +71,16 @@ export async function generateEmailDraft(
     ${cvText}
     ---
 
+    ${linksBlock ? `Candidate Links (use these EXACT URLs, do NOT make up URLs):\n    ${linksBlock}\n` : ""}
+    ${draftCtx?.applicantName ? `Candidate Name: ${draftCtx.applicantName}` : ""}
+
     Job Requirements:
     ---
     Job Title: ${jobData.jobTitle}
+    Company: ${jobData.companyName || "Not specified"}
     Required Experience: ${jobData.requiredExperience}
     Key Skills: ${jobData.keySkills.join(', ')}
+    ${jobData.companyValues ? `Company Values/About: ${jobData.companyValues}` : ""}
     ---
   `;
 

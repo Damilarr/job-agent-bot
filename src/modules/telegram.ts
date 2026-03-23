@@ -5,7 +5,7 @@ import { parseJobDescription } from "./parser.js";
 import type { ParsedJobDescription } from "./parser.js";
 import { evaluateMatch } from "./matcher.js";
 import { generateEmailDraft, reviseEmailDraft } from "./drafter.js";
-import type { EmailDraft } from "./drafter.js";
+import type { EmailDraft, DraftContext } from "./drafter.js";
 import { generateCoverLetterPDF } from "./coverLetter.js";
 import { sendApplicationEmailForUser } from "./email.js";
 import { runAutoApplyCycle } from "./autoApply.js";
@@ -216,10 +216,7 @@ export type PendingGoogleFormSession = {
 const pendingMultiRole = new Map<string, PendingGoogleFormSession>();
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 async function resolveResumePathForUser(
@@ -1025,9 +1022,51 @@ bot.on("message:text", async (ctx) => {
       "✍️ Drafting application email...",
     );
 
-    const draft = await generateEmailDraft(jobData, cvText, match.feedback);
+    const tgName =
+      from.first_name || from.last_name
+        ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
+        : undefined;
 
-    if (jobData.requiresCoverLetter) {
+    const userLinks = await getLinksForTelegramUser(
+      telegramChatId,
+      tgName,
+      from.username || undefined,
+    );
+    const applicantDisplayName = await resolveApplicantDisplayNameForForms(
+      telegramChatId,
+      {
+        ...(tgName !== undefined ? { name: tgName } : {}),
+        ...(from.first_name !== undefined
+          ? { telegramFirstName: from.first_name }
+          : {}),
+        ...(from.last_name !== undefined
+          ? { telegramLastName: from.last_name }
+          : {}),
+        ...(from.username !== undefined ? { username: from.username } : {}),
+      },
+    );
+
+    const ghUrl = userLinks.find((l) => l.label === "github")?.url;
+    const liUrl = userLinks.find((l) => l.label === "linkedin")?.url;
+    const pfUrl = userLinks.find((l) => l.label === "portfolio")?.url;
+    const draftCtx: DraftContext = {
+      ...(ghUrl ? { githubUrl: ghUrl } : {}),
+      ...(liUrl ? { linkedinUrl: liUrl } : {}),
+      ...(pfUrl ? { portfolioUrl: pfUrl } : {}),
+      ...(applicantDisplayName ? { applicantName: applicantDisplayName } : {}),
+    };
+
+    const draft = await generateEmailDraft(
+      jobData,
+      cvText,
+      match.feedback,
+      draftCtx,
+    );
+
+    const shouldGenerateCoverLetter =
+      jobData.requiresCoverLetter || !!jobData.applicationEmail;
+
+    if (shouldGenerateCoverLetter) {
       await ctx.api.editMessageText(
         ctx.chat.id,
         statusMsg.message_id,
@@ -1037,7 +1076,7 @@ bot.on("message:text", async (ctx) => {
 
     let coverLetterFilename: string | undefined;
     let coverLetterPath: string | undefined;
-    if (jobData.requiresCoverLetter) {
+    if (shouldGenerateCoverLetter) {
       coverLetterFilename = `Cover_Letter_${jobData.jobTitle.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
       coverLetterPath = await generateCoverLetterPDF(
         jobData,
@@ -1084,10 +1123,7 @@ bot.on("message:text", async (ctx) => {
     const keyboard = new InlineKeyboard();
 
     if (jobData.applicationEmail) {
-      const displayName =
-        (ctx.from.first_name || ctx.from.last_name
-          ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-          : myCV.name) || myCV.name;
+      const displayName = applicantDisplayName || myCV.name;
 
       const dynamicFilename = `${displayName.replace(/\s+/g, "_")}_${jobData.jobTitle.replace(/[^a-zA-Z0-9]/g, "_")}_Resume.pdf`;
 
@@ -1095,9 +1131,7 @@ bot.on("message:text", async (ctx) => {
 
       const userResumePath = await getLatestResumePathForTelegramUser(
         telegramChatId,
-        from.first_name || from.last_name
-          ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
-          : undefined,
+        tgName,
         from.username || undefined,
       );
       const resumeFileExists =
@@ -1105,25 +1139,15 @@ bot.on("message:text", async (ctx) => {
 
       replyText += `\n\n📎 *Attachments ready:*\n`;
 
-      if (jobData.requiresResume) {
-        if (resumeFileExists) {
-          replyText += `- \`${dynamicFilename}\` (from your /set_resume upload)\n`;
-          keyboard.text("✏️ Rename Resume", `rename_${actionId}`).row();
-        } else {
-          replyText += `⚠️ *No Resume Found:* The JD requested a resume. Upload one via /set_resume.\n`;
-        }
+      if (resumeFileExists) {
+        replyText += `- \`${dynamicFilename}\`\n`;
+        keyboard.text("✏️ Rename Resume", `rename_${actionId}`).row();
       } else {
-        replyText += `- Resume skipped (Not requested by JD)\n`;
+        replyText += `⚠️ *No Resume Found:* Upload one via /set_resume so it can be attached.\n`;
       }
 
-      if (
-        jobData.requiresCoverLetter &&
-        coverLetterFilename &&
-        coverLetterPath
-      ) {
+      if (coverLetterFilename && coverLetterPath) {
         replyText += `- \`${coverLetterFilename}\`\n`;
-      } else {
-        replyText += `- Cover Letter skipped (Not requested by JD)\n`;
       }
 
       keyboard.text("🚀 Send Email", `send_${actionId}`);
@@ -1395,9 +1419,7 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
     pending,
     from.id,
     {
-      ...(from.first_name !== undefined
-        ? { first_name: from.first_name }
-        : {}),
+      ...(from.first_name !== undefined ? { first_name: from.first_name } : {}),
       ...(from.last_name !== undefined ? { last_name: from.last_name } : {}),
       ...(from.username !== undefined ? { username: from.username } : {}),
     },
