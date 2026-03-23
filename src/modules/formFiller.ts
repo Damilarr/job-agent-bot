@@ -42,10 +42,12 @@ export interface GoogleFormFillOptions {
 }
 
 function sanitizeGoogleFormQuestionLabel(raw: string): string {
-  let t = raw.replace(/\s+/g, " ").trim();
-  t = t.replace(/\s*\*\s*Required\s*$/i, "").replace(/\s*Required\s*$/i, "").trim();
-  const firstLine = t.split("\n").find((l) => l.trim().length > 0) ?? t;
-  return firstLine.slice(0, 200);
+  let t = raw.trim();
+  t = t.replace(/\s*\*$/, "").trim();
+  t = t.replace(/\s*Required\s*$/i, "").trim();
+  const lines = t.split(/\n/).filter((l) => l.trim().length > 0);
+  const first = (lines[0] ?? t).trim();
+  return first.slice(0, 200);
 }
 
 /**
@@ -161,9 +163,24 @@ export async function autoFillGoogleForm(
     const page = await context.newPage();
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
 
-    // Some forms load within an iframe; in most cases the main page is enough.
+    const currentUrl = page.url();
+    const pageText = await page.textContent("body").catch(() => "") ?? "";
+    const isSignInWall =
+      currentUrl.includes("accounts.google.com") ||
+      /sign\s*in\s+to\s+continue/i.test(pageText) ||
+      (await page.locator('input[type="email"][name="identifier"]').count()) >
+        0;
+
+    if (isSignInWall) {
+      return {
+        success: false,
+        message:
+          "This Google Form requires sign-in to a Google account. Playwright cannot authenticate automatically — please open the form in your browser and fill it manually.",
+      };
+    }
+
     const activePage = page;
 
     const fillFileInputsOnPage = async () => {
@@ -178,7 +195,11 @@ export async function autoFillGoogleForm(
           'xpath=ancestor::*[@role="listitem"][1]',
         );
         const qRaw = (await container.textContent().catch(() => "")) || "";
-        const label = sanitizeGoogleFormQuestionLabel(qRaw);
+        const headingEl = container.locator('[role="heading"]').first();
+        const headingText = (await headingEl.textContent().catch(() => "")) || "";
+        const label =
+          sanitizeGoogleFormQuestionLabel(headingText) ||
+          sanitizeGoogleFormQuestionLabel(qRaw);
         const qText = qRaw.toLowerCase();
 
         const looksCover =
@@ -238,17 +259,20 @@ export async function autoFillGoogleForm(
       }
     };
 
-    const locateSubmitButton = () =>
-      activePage
-        .locator(
-          [
-            'div[role="button"]:has-text("Submit")',
-            'span:has-text("Submit")',
-            'button:has-text("Submit")',
-            '[jsname]:has-text("Submit")',
-          ].join(", "),
-        )
-        .first();
+    const locateSubmitButton = async () => {
+      const selectors = [
+        'div[role="button"]:has-text("Submit")',
+        'span[role="button"]:has-text("Submit")',
+        'button:has-text("Submit")',
+        '[jsname]:has-text("Submit")',
+        'div[role="button"]:has-text("submit")',
+      ];
+      for (const sel of selectors) {
+        const loc = activePage.locator(sel).first();
+        if (await loc.isVisible().catch(() => false)) return loc;
+      }
+      return activePage.locator('div[role="button"]:has-text("Submit")').first();
+    };
 
     const fillInputsOnPage = async () => {
       const inputs = activePage.locator(
@@ -265,7 +289,12 @@ export async function autoFillGoogleForm(
           'xpath=ancestor::*[@role="listitem"][1]',
         );
         const qTextRaw = (await container.textContent().catch(() => "")) || "";
-        const questionLabel = sanitizeGoogleFormQuestionLabel(qTextRaw);
+        const headingEl = container.locator('[role="heading"]').first();
+        const headingText = (await headingEl.textContent().catch(() => "")) || "";
+        const questionLabel =
+          aria ||
+          sanitizeGoogleFormQuestionLabel(headingText) ||
+          sanitizeGoogleFormQuestionLabel(qTextRaw);
         const combined = `${aria}\n${qTextRaw}`.toLowerCase();
 
         const pick = (): string | null => {
@@ -434,7 +463,7 @@ export async function autoFillGoogleForm(
       const nextBtn = activePage
         .locator('div[role="button"]:has-text("Next")')
         .first();
-      const submitBtn = locateSubmitButton();
+      const submitBtn = await locateSubmitButton();
 
       if (await submitBtn.isVisible().catch(() => false)) {
         if (shouldSubmit) {

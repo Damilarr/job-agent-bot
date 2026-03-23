@@ -1,11 +1,11 @@
-import { Bot, InlineKeyboard, Context, session } from "grammy";
+import { Bot, InlineKeyboard, InputFile, Context, session } from "grammy";
 import { env } from "../config/env.js";
 import { myCV } from "../data/cv.js";
 import { parseJobDescription } from "./parser.js";
 import type { ParsedJobDescription } from "./parser.js";
 import { evaluateMatch } from "./matcher.js";
 import { generateEmailDraft, reviseEmailDraft } from "./drafter.js";
-import type { EmailDraft, DraftContext } from "./drafter.js";
+import type { EmailDraft, DraftContext, DraftTone } from "./drafter.js";
 import { generateCoverLetterPDF } from "./coverLetter.js";
 import { sendApplicationEmailForUser } from "./email.js";
 import { runAutoApplyCycle } from "./autoApply.js";
@@ -13,6 +13,10 @@ import {
   getRecentUserEvents,
   logUserEvent,
   saveAdminChatId,
+  addUserApplication,
+  getUserApplications,
+  updateApplicationStatus,
+  type ApplicationStatus,
 } from "../data/db.js";
 import {
   autoFillGoogleForm,
@@ -474,6 +478,9 @@ const pendingEmails = new Map<
     customResumeName?: string;
     coverLetterPath?: string;
     userId: number;
+    cvText?: string;
+    draftCtx?: DraftContext;
+    tone?: DraftTone;
   }
 >();
 
@@ -571,6 +578,167 @@ bot.command("my_status", async (ctx) => {
   await ctx.reply(msg, { parse_mode: "Markdown" });
 });
 
+bot.command("my_applications", async (ctx) => {
+  if (!ctx.from) return;
+  const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
+  const apps = getUserApplications(user.id, 20);
+
+  if (!apps.length) {
+    await ctx.reply("📋 No applications tracked yet. Send a JD to get started!");
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    sent: "📨",
+    replied: "💬",
+    interview: "🗓️",
+    offer: "🎉",
+    rejected: "❌",
+    ghosted: "👻",
+  };
+
+  let msg = "<b>📋 Your Applications</b>\n\n";
+  for (const app of apps) {
+    const emoji = statusEmoji[app.status] || "📨";
+    const date = app.created_at.slice(0, 10);
+    const score = app.match_score != null ? ` (${app.match_score}%)` : "";
+    msg += `${emoji} <b>#${app.id}</b> ${escapeHtml(app.role)} @ ${escapeHtml(app.company)}${score}\n`;
+    msg += `   ${app.method} · ${app.status} · ${date}\n`;
+  }
+
+  msg +=
+    "\n<i>Update status:</i> tap a button or use\n<code>/update_status [id] [status]</code>\n";
+  msg +=
+    "<i>Statuses: sent, replied, interview, offer, rejected, ghosted</i>";
+
+  const keyboard = new InlineKeyboard();
+  const recent = apps.slice(0, 5);
+  for (const app of recent) {
+    keyboard
+      .text(
+        `#${app.id} ${app.role.slice(0, 18)}`,
+        `appstatus_${app.id}`,
+      )
+      .row();
+  }
+
+  await ctx.reply(msg, { parse_mode: "HTML", reply_markup: keyboard });
+});
+
+bot.command("update_status", async (ctx) => {
+  if (!ctx.from) return;
+  const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
+  const text = ctx.message?.text ?? "";
+  const parts = text.replace(/^\/update_status\s*/i, "").trim().split(/\s+/);
+  const appId = parseInt(parts[0] ?? "", 10);
+  const newStatus = (parts[1] ?? "").toLowerCase() as ApplicationStatus;
+
+  const validStatuses: ApplicationStatus[] = [
+    "sent",
+    "replied",
+    "interview",
+    "offer",
+    "rejected",
+    "ghosted",
+  ];
+
+  if (isNaN(appId) || !validStatuses.includes(newStatus)) {
+    await ctx.reply(
+      "Usage: `/update_status [id] [status]`\nStatuses: sent, replied, interview, offer, rejected, ghosted",
+      { parse_mode: "Markdown" },
+    );
+    return;
+  }
+
+  const updated = updateApplicationStatus(appId, user.id, newStatus);
+  if (updated) {
+    await ctx.reply(`✅ Application #${appId} updated to *${newStatus}*.`, {
+      parse_mode: "Markdown",
+    });
+  } else {
+    await ctx.reply(`❌ Application #${appId} not found.`);
+  }
+});
+
+bot.callbackQuery(/^appstatus_(\d+)$/, async (ctx) => {
+  const appId = parseInt(ctx.match[1] ?? "0", 10);
+  const keyboard = new InlineKeyboard();
+  const statuses: { label: string; value: ApplicationStatus }[] = [
+    { label: "💬 Replied", value: "replied" },
+    { label: "🗓️ Interview", value: "interview" },
+    { label: "🎉 Offer", value: "offer" },
+    { label: "❌ Rejected", value: "rejected" },
+    { label: "👻 Ghosted", value: "ghosted" },
+  ];
+  for (const s of statuses) {
+    keyboard.text(s.label, `setappstatus_${appId}_${s.value}`);
+  }
+  keyboard.row().text("🔙 Back", "back_to_apps");
+
+  await ctx.editMessageText(`Update status for application #${appId}:`, {
+    reply_markup: keyboard,
+  });
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery(/^setappstatus_(\d+)_(\w+)$/, async (ctx) => {
+  if (!ctx.from) return;
+  const appId = parseInt(ctx.match[1] ?? "0", 10);
+  const status = (ctx.match[2] ?? "sent") as ApplicationStatus;
+  const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
+
+  const updated = updateApplicationStatus(appId, user.id, status);
+  if (updated) {
+    await ctx.editMessageText(
+      `✅ Application #${appId} updated to *${status}*.`,
+      { parse_mode: "Markdown" },
+    );
+  } else {
+    await ctx.editMessageText(`❌ Application #${appId} not found.`);
+  }
+  await ctx.answerCallbackQuery();
+});
+
+bot.callbackQuery("back_to_apps", async (ctx) => {
+  if (!ctx.from) return;
+  const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
+  const apps = getUserApplications(user.id, 20);
+
+  const statusEmoji: Record<string, string> = {
+    sent: "📨",
+    replied: "💬",
+    interview: "🗓️",
+    offer: "🎉",
+    rejected: "❌",
+    ghosted: "👻",
+  };
+
+  let msg = "<b>📋 Your Applications</b>\n\n";
+  for (const app of apps) {
+    const emoji = statusEmoji[app.status] || "📨";
+    const date = app.created_at.slice(0, 10);
+    const score = app.match_score != null ? ` (${app.match_score}%)` : "";
+    msg += `${emoji} <b>#${app.id}</b> ${escapeHtml(app.role)} @ ${escapeHtml(app.company)}${score}\n`;
+    msg += `   ${app.method} · ${app.status} · ${date}\n`;
+  }
+  msg +=
+    "\n<i>Update status:</i> tap a button or use\n<code>/update_status [id] [status]</code>";
+
+  const keyboard = new InlineKeyboard();
+  const recent = apps.slice(0, 5);
+  for (const app of recent) {
+    keyboard
+      .text(`#${app.id} ${app.role.slice(0, 18)}`, `appstatus_${app.id}`)
+      .row();
+  }
+
+  await ctx.editMessageText(msg, {
+    parse_mode: "HTML",
+    reply_markup: keyboard,
+  });
+  await ctx.answerCallbackQuery();
+});
+
 bot.command("job_hunt", async (ctx) => {
   if (!ctx.from) return;
 
@@ -606,6 +774,38 @@ bot.command("set_links", async (ctx) => {
 // Per-user email configuration (Gmail SMTP for now)
 bot.command("set_email", async (ctx) => {
   await startSetEmail(ctx);
+});
+
+bot.command("download_resume", async (ctx) => {
+  if (!ctx.from) return;
+  const resumePath = await getLatestResumePathForTelegramUser(ctx.from.id);
+  if (!resumePath || !fs.existsSync(resumePath)) {
+    await ctx.reply(
+      "No resume found. Upload one with /set\\_resume first.",
+      { parse_mode: "Markdown" },
+    );
+    return;
+  }
+  await ctx.replyWithDocument(new InputFile(resumePath, path.basename(resumePath)));
+});
+
+bot.command("download_cover_letter", async (ctx) => {
+  if (!ctx.from) return;
+  const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
+  const apps = getUserApplications(user.id, 10);
+  const latest = apps.find(
+    (a) => a.cover_letter_path && fs.existsSync(a.cover_letter_path),
+  );
+
+  if (!latest) {
+    await ctx.reply(
+      "No cover letter found. One is generated when you send an email application.",
+    );
+    return;
+  }
+  await ctx.replyWithDocument(
+    new InputFile(latest.cover_letter_path!, path.basename(latest.cover_letter_path!)),
+  );
 });
 
 bot.on("message:document", async (ctx) => {
@@ -1094,7 +1294,10 @@ bot.on("message:text", async (ctx) => {
       customResumeName?: string;
       coverLetterPath?: string;
       userId: number;
-    } = { jobData, match, draft, userId: user.id };
+      cvText: string;
+      draftCtx: DraftContext;
+      tone: DraftTone;
+    } = { jobData, match, draft, userId: user.id, cvText, draftCtx, tone: "confident" };
 
     if (coverLetterPath) {
       newPendingEmail.coverLetterPath = coverLetterPath;
@@ -1152,6 +1355,10 @@ bot.on("message:text", async (ctx) => {
 
       keyboard.text("🚀 Send Email", `send_${actionId}`);
       keyboard.text("❌ Cancel", `cancel_${actionId}`);
+      keyboard.row();
+      keyboard.text("💪 Confident", `tone_confident_${actionId}`);
+      keyboard.text("🎩 Formal", `tone_formal_${actionId}`);
+      keyboard.text("😊 Friendly", `tone_friendly_${actionId}`);
     } else {
       replyText += `\n\n⚠️ No application email was found in the JD, so I cannot send it via Gmail.`;
     }
@@ -1198,6 +1405,72 @@ bot.callbackQuery(/^edit_(.+)$/, async (ctx) => {
     console.error(err);
     await ctx.answerCallbackQuery({
       text: "Error preparing edit.",
+      show_alert: true,
+    });
+  }
+});
+
+bot.callbackQuery(/^tone_(confident|formal|friendly)_(.+)$/, async (ctx) => {
+  try {
+    const tone = ctx.match[1] as DraftTone;
+    const actionId = ctx.match[2];
+    if (!actionId) return;
+
+    const pending = pendingEmails.get(actionId);
+    if (!pending) {
+      await ctx.answerCallbackQuery({
+        text: "Session expired or invalid.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: `Regenerating as ${tone}...` });
+
+    const toneCtx: DraftContext = {
+      ...pending.draftCtx,
+      tone,
+    };
+
+    const newDraft = await generateEmailDraft(
+      pending.jobData,
+      pending.cvText ?? "",
+      pending.match?.feedback,
+      toneCtx,
+    );
+
+    pending.draft = newDraft;
+    pending.tone = tone;
+
+    const toneLabel: Record<DraftTone, string> = {
+      confident: "💪 Confident",
+      formal: "🎩 Formal",
+      friendly: "😊 Friendly",
+    };
+
+    let replyText = `**Email Draft** (${toneLabel[tone]})\n`;
+    replyText += `*Subject:* ${newDraft.subject}\n`;
+    replyText += `*Body:*\n${newDraft.bodyText}`;
+
+    const keyboard = new InlineKeyboard();
+    keyboard.text("📝 Edit Draft", `edit_${actionId}`);
+    if (pending.jobData.applicationEmail) {
+      keyboard.text("🚀 Send Email", `send_${actionId}`);
+    }
+    keyboard.text("❌ Cancel", `cancel_${actionId}`);
+    keyboard.row();
+    keyboard.text("💪 Confident", `tone_confident_${actionId}`);
+    keyboard.text("🎩 Formal", `tone_formal_${actionId}`);
+    keyboard.text("😊 Friendly", `tone_friendly_${actionId}`);
+
+    await ctx.editMessageText(replyText, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+  } catch (err) {
+    console.error("Tone switch error:", err);
+    await ctx.answerCallbackQuery({
+      text: "Failed to regenerate draft.",
       show_alert: true,
     });
   }
@@ -1403,8 +1676,11 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
   const idx = parseInt(ctx.match[2] || "0", 10);
   const pending = token ? pendingMultiRole.get(token) : null;
   if (!pending || !pending.googleFormUrl) {
+    console.warn(
+      `submitform: token=${token} found=${!!pending} mapSize=${pendingMultiRole.size}`,
+    );
     await ctx.answerCallbackQuery({
-      text: "Session expired.",
+      text: "Session expired — the bot may have restarted. Please paste the JD again.",
       show_alert: true,
     });
     return;
@@ -1431,10 +1707,23 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
     submit: true,
   });
 
+  if (result.success) {
+    const { user } = await getOrCreateUserAndProfileForTelegram(from.id);
+    addUserApplication({
+      userId: user.id,
+      company: "Unknown",
+      role,
+      method: "google_form",
+      destination: pending.googleFormUrl ?? undefined,
+    });
+  }
+
   if (token) pendingMultiRole.delete(token);
 
   await ctx.editMessageText(
-    result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+    result.success
+      ? `✅ ${result.message}\n\nTracked in /my_applications.`
+      : `❌ ${result.message}`,
   );
   await ctx.answerCallbackQuery();
 });
@@ -1676,8 +1965,17 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
 
     if (result.success) {
       logUserEvent(pending.userId, "email_sent", pending.jobData.jobTitle);
+      addUserApplication({
+        userId: pending.userId,
+        company: pending.jobData.companyName || "Unknown",
+        role: pending.jobData.jobTitle,
+        method: "email",
+        ...(pending.jobData.applicationEmail ? { destination: pending.jobData.applicationEmail } : {}),
+        ...(pending.match?.matchScore != null ? { matchScore: pending.match.matchScore } : {}),
+        ...(pending.coverLetterPath ? { coverLetterPath: pending.coverLetterPath } : {}),
+      });
       await ctx.editMessageText(
-        `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\``,
+        `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\`\n\nTracked in /my\\_applications.`,
         { parse_mode: "Markdown" },
       );
       pendingEmails.delete(actionId);
@@ -1727,8 +2025,16 @@ const BOT_MENU_COMMANDS = [
     description: "Set or update GitHub, LinkedIn, portfolio & custom links",
   },
   {
-    command: "job_hunt",
-    description: "Manually trigger an automated job search (disabled)",
+    command: "my_applications",
+    description: "View your tracked applications and update statuses",
+  },
+  {
+    command: "download_resume",
+    description: "Download your uploaded resume",
+  },
+  {
+    command: "download_cover_letter",
+    description: "Download the last generated cover letter",
   },
   {
     command: "my_status",

@@ -84,6 +84,21 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS user_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    company TEXT NOT NULL,
+    role TEXT NOT NULL,
+    method TEXT NOT NULL, -- 'email' | 'google_form' | 'manual'
+    destination TEXT, -- email address or form URL
+    match_score INTEGER,
+    status TEXT NOT NULL DEFAULT 'sent', -- 'sent' | 'replied' | 'interview' | 'offer' | 'rejected' | 'ghosted'
+    cover_letter_path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 `);
 
 export interface DBJobRecord {
@@ -148,6 +163,22 @@ export interface DBUserEvent {
   type: string;
   detail: string | null;
   created_at: string;
+}
+
+export type ApplicationStatus = 'sent' | 'replied' | 'interview' | 'offer' | 'rejected' | 'ghosted';
+
+export interface DBUserApplication {
+  id: number;
+  user_id: number;
+  company: string;
+  role: string;
+  method: string;
+  destination: string | null;
+  match_score: number | null;
+  status: ApplicationStatus;
+  cover_letter_path: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 function deriveEncryptionKey(): Buffer | null {
@@ -356,6 +387,66 @@ export function logUserEvent(userId: number, type: string, detail?: string): voi
 export function getRecentUserEvents(userId: number, limit: number = 10): DBUserEvent[] {
   const stmt = db.prepare('SELECT * FROM user_events WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT ?');
   return stmt.all(userId, limit) as DBUserEvent[];
+}
+
+export function addUserApplication(app: {
+  userId: number;
+  company: string;
+  role: string;
+  method: string;
+  destination?: string;
+  matchScore?: number;
+  coverLetterPath?: string;
+}): DBUserApplication {
+  const stmt = db.prepare(`
+    INSERT INTO user_applications (user_id, company, role, method, destination, match_score, cover_letter_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    app.userId,
+    app.company,
+    app.role,
+    app.method,
+    app.destination || null,
+    app.matchScore ?? null,
+    app.coverLetterPath || null,
+  );
+  const row = db.prepare('SELECT * FROM user_applications WHERE id = ?').get(
+    Number(result.lastInsertRowid),
+  ) as DBUserApplication;
+  return row;
+}
+
+export function getUserApplications(
+  userId: number,
+  limit: number = 20,
+): DBUserApplication[] {
+  const stmt = db.prepare(
+    'SELECT * FROM user_applications WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT ?',
+  );
+  return stmt.all(userId, limit) as DBUserApplication[];
+}
+
+export function updateApplicationStatus(
+  applicationId: number,
+  userId: number,
+  status: ApplicationStatus,
+): boolean {
+  const stmt = db.prepare(
+    'UPDATE user_applications SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+  );
+  const result = stmt.run(status, applicationId, userId);
+  return result.changes > 0;
+}
+
+export function getUserApplicationById(
+  applicationId: number,
+  userId: number,
+): DBUserApplication | null {
+  const stmt = db.prepare(
+    'SELECT * FROM user_applications WHERE id = ? AND user_id = ?',
+  );
+  return (stmt.get(applicationId, userId) as DBUserApplication) || null;
 }
 
 /**

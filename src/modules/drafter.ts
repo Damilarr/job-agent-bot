@@ -23,12 +23,15 @@ export interface EmailDraft {
   bodyText: string;
 }
 
+export type DraftTone = "confident" | "formal" | "friendly";
+
 export interface DraftContext {
   /** User's real links, resolved from /set_links */
   githubUrl?: string;
   linkedinUrl?: string;
   portfolioUrl?: string;
   applicantName?: string;
+  tone?: DraftTone;
 }
 
 /**
@@ -48,20 +51,30 @@ export async function generateEmailDraft(
     .filter(Boolean)
     .join("\n    ");
 
+  const toneInstructions: Record<DraftTone, string> = {
+    confident: `Write with a confident, direct tone. Sound like a top-tier candidate who knows their worth. Be assertive about skills and value. No hedging language like "I think" or "I believe".`,
+    formal: `Write with a polished, professional tone. Use proper salutations and structured sentences. Maintain formality while still being concise and genuine. Suitable for corporate or enterprise roles.`,
+    friendly: `Write with a warm, approachable tone. Sound personable and enthusiastic without being over-the-top. Use casual but professional language. Good for startups and creative teams.`,
+  };
+
+  const tone = draftCtx?.tone ?? "confident";
+
   const prompt = `
     You are an expert career advisor and professional copywriter.
     I will provide you with a candidate's Master CV, the parsed details of a job opportunity, and some optional context feedback.
     
     Your task is to write a highly conversational, ultra-concise, and extremely human job application email draft.
+
+    TONE: ${toneInstructions[tone]}
     
     CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
     1. NEVER use robotic AI buzzwords or formal clichés like: "I am writing to express my keen interest", "coupled with", "aligns perfectly with your requirements", "delve", "synergy", "thrilled to apply".
-    2. Write like a real, competent software engineer sending a quick ping to a hiring manager or recruiter. 
+    2. Write like a real, competent professional sending a quick ping to a hiring manager or recruiter. 
     3. Keep it ultra-short. Maximum 3-4 sentences (under 50 words). 
     4. Start normally (e.g., "Hi Team,", "Hi there,", or just "Hello,").
     5. Directly mention 1 specific skill/achievement from my CV that proves I can do what they need.
     6. You MUST use the EXACT links provided below — do NOT invent, shorten, or substitute any URL.${linksBlock ? ` Include my portfolio link naturally in the text.` : ""}
-    7. Be confident and direct, not overly polite or desperate.
+    7. Maintain the ${tone} tone throughout.
     8. If a company name is provided, mention it once naturally (e.g., "at [Company]").
     9. Reference at least one specific responsibility or requirement from the JD to show you read it.
     ${feedback ? `\n    Context/Feedback provided: ${feedback}` : ""}

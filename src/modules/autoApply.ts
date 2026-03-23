@@ -7,7 +7,7 @@ import { generateEmailDraft } from './drafter.js';
 import { generateCoverLetterPDF } from './coverLetter.js';
 import { sendApplicationEmailForUser } from './email.js';
 import { autoFillApplication } from './formFiller.js';
-import { hasJobBeenProcessed, logProcessedJob, getAdminChatId, getOrCreateUserByTelegramChat } from '../data/db.js';
+import { hasJobBeenProcessed, logProcessedJob, getAdminChatId, getOrCreateUserByTelegramChat, addUserApplication } from '../data/db.js';
 import type { DBJobRecord } from '../data/db.js';
 import fs from 'fs';
 import { myCV, formatCVForPrompt } from '../data/cv.js';
@@ -199,6 +199,16 @@ export async function runAutoApplyCycle() {
         if (emailResult.success) {
            dbRecord.status = 'APPLIED';
            console.log(`      🎉 Successfully applied to ${job.company} via Email!`);
+
+           addUserApplication({
+             userId: adminUser.id,
+             company: job.company || parsedJD.companyName || "Unknown",
+             role: job.title || parsedJD.jobTitle,
+             method: "email",
+             destination: parsedJD.applicationEmail,
+             matchScore: match.matchScore,
+             ...(coverLetterPath ? { coverLetterPath } : {}),
+           });
 
            if (adminChatId) {
              const msg = `🚀 **Auto-Submitted Email Application!**\n\n**Source:** ${job.source}\n**Role:** ${job.title}\n**Company:** ${job.company}\n**Match Score:** ${match.matchScore}%\n\n✅ Email sent to ${parsedJD.applicationEmail}`;
