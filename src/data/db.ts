@@ -75,6 +75,15 @@ db.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS user_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    detail TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 `);
 
 export interface DBJobRecord {
@@ -131,6 +140,50 @@ export interface DBUserEmailAccount {
   smtp_password: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface DBUserEvent {
+  id: number;
+  user_id: number;
+  type: string;
+  detail: string | null;
+  created_at: string;
+}
+
+function deriveEncryptionKey(): Buffer | null {
+  const raw = process.env.EMAIL_ENCRYPTION_KEY;
+  if (!raw) return null;
+  // Derive a 32-byte key from any provided secret
+  const crypto = require('crypto') as typeof import('crypto');
+  return crypto.createHash('sha256').update(raw).digest();
+}
+
+function encryptSecret(plaintext: string): string {
+  const key = deriveEncryptionKey();
+  if (!key) return plaintext;
+  const crypto = require('crypto') as typeof import('crypto');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${Buffer.concat([iv, tag, enc]).toString('base64')}`;
+}
+
+function decryptSecret(stored: string): string {
+  if (!stored.startsWith('enc:v1:')) return stored;
+  const key = deriveEncryptionKey();
+  if (!key) {
+    throw new Error('EMAIL_ENCRYPTION_KEY is required to decrypt stored email credentials');
+  }
+  const crypto = require('crypto') as typeof import('crypto');
+  const data = Buffer.from(stored.slice('enc:v1:'.length), 'base64');
+  const iv = data.subarray(0, 12);
+  const tag = data.subarray(12, 28);
+  const enc = data.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  const dec = Buffer.concat([decipher.update(enc), decipher.final()]);
+  return dec.toString('utf8');
 }
 
 /**
@@ -285,13 +338,24 @@ export function upsertUserEmailAccount(account: Omit<DBUserEmailAccount, 'create
       updated_at = CURRENT_TIMESTAMP
   `);
 
-  stmt.run(account);
+  stmt.run({ ...account, smtp_password: encryptSecret(account.smtp_password) });
 }
 
 export function getUserEmailAccount(userId: number): DBUserEmailAccount | null {
   const stmt = db.prepare('SELECT * FROM user_email_accounts WHERE user_id = ?');
   const row = stmt.get(userId) as DBUserEmailAccount | undefined;
-  return row || null;
+  if (!row) return null;
+  return { ...row, smtp_password: decryptSecret(row.smtp_password) };
+}
+
+export function logUserEvent(userId: number, type: string, detail?: string): void {
+  const stmt = db.prepare('INSERT INTO user_events (user_id, type, detail) VALUES (?, ?, ?)');
+  stmt.run(userId, type, detail || null);
+}
+
+export function getRecentUserEvents(userId: number, limit: number = 10): DBUserEvent[] {
+  const stmt = db.prepare('SELECT * FROM user_events WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT ?');
+  return stmt.all(userId, limit) as DBUserEvent[];
 }
 
 /**

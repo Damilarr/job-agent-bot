@@ -9,7 +9,11 @@ import type { EmailDraft } from "./drafter.js";
 import { generateCoverLetterPDF } from "./coverLetter.js";
 import { sendApplicationEmailForUser } from "./email.js";
 import { runAutoApplyCycle } from "./autoApply.js";
-import { saveAdminChatId } from "../data/db.js";
+import {
+  getRecentUserEvents,
+  logUserEvent,
+  saveAdminChatId,
+} from "../data/db.js";
 import { autoFillGoogleForm } from "./formFiller.js";
 import {
   getOrCreateUserAndProfileForTelegram,
@@ -42,6 +46,37 @@ interface SessionData {
 type MyContext = Context & {
   session: SessionData;
 };
+
+const GLOBAL_CONCURRENCY = 2;
+let globalActive = 0;
+const globalQueue: Array<() => void> = [];
+
+async function withGlobalLimit<T>(fn: () => Promise<T>): Promise<T> {
+  if (globalActive >= GLOBAL_CONCURRENCY) {
+    await new Promise<void>((resolve) => globalQueue.push(resolve));
+  }
+  globalActive++;
+  try {
+    return await fn();
+  } finally {
+    globalActive--;
+    const next = globalQueue.shift();
+    if (next) next();
+  }
+}
+
+const userChains = new Map<number, Promise<unknown>>();
+function queueForUser<T>(userId: number, fn: () => Promise<T>): Promise<T> {
+  const prev = userChains.get(userId) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  userChains.set(
+    userId,
+    next.finally(() => {
+      if (userChains.get(userId) === next) userChains.delete(userId);
+    }),
+  );
+  return next;
+}
 
 /** Heuristic: does this message look like a job description (so we don't run the parser on "nice", "thanks", etc.)? */
 function looksLikeJobDescription(text: string): boolean {
@@ -81,7 +116,10 @@ function extractGoogleFormUrl(text: string): string | null {
 }
 
 function extractRoles(text: string): string[] {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   const roles: string[] = [];
 
   // Look for numbered roles (1. Role — ...), especially after a "Roles:" marker.
@@ -98,7 +136,11 @@ function extractRoles(text: string): string[] {
         continue;
       }
       // End roles section when we hit Location/Requirements/etc.
-      if (/^(location|requirements?|candidates?|apply|if you know|notes?)\b/i.test(line)) {
+      if (
+        /^(location|requirements?|candidates?|apply|if you know|notes?)\b/i.test(
+          line,
+        )
+      ) {
         inRoles = false;
       }
     }
@@ -108,19 +150,47 @@ function extractRoles(text: string): string[] {
   if (roles.length === 0) {
     for (const line of lines) {
       const m = line.match(/^(\d+)[.)-]\s*(.+)$/);
-      if (m?.[2] && /senior|developer|engineer|architect|owner|manager|designer|lead/i.test(m[2])) {
+      if (
+        m?.[2] &&
+        /senior|developer|engineer|architect|owner|manager|designer|lead/i.test(
+          m[2],
+        )
+      ) {
         roles.push(m[2].trim());
       }
     }
   }
 
-  // Normalize: strip trailing salary ranges etc for button labels, but keep full string
-  return roles.slice(0, 6);
+  const cleaned = roles
+    .map((r) =>
+      r
+        // strip salary/ranges like "– ₦1M – ₦2M" or "$..." etc
+        .replace(/[-–—]\s*(₦|\$|£|€)\s*[\d.,]+[^\n]*/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim(),
+    )
+    .filter(Boolean);
+
+  // De-dup (case-insensitive)
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const r of cleaned) {
+    const k = r.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    unique.push(r);
+  }
+  return unique.slice(0, 8);
 }
 
-function extractReferrerDetails(text: string): { referrerName?: string; referrerEmail?: string } {
+function extractReferrerDetails(text: string): {
+  referrerName?: string;
+  referrerEmail?: string;
+} {
   const nameMatch = text.match(/input\s+my\s+name\s*[-–:]\s*([^\n.]+)/i);
-  const emailMatch = text.match(/\bmy\s+email\s+is\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i);
+  const emailMatch = text.match(
+    /\bmy\s+email\s+is\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+  );
   const referrerName = nameMatch?.[1]?.trim();
   const referrerEmail = emailMatch?.[1]?.trim();
   return {
@@ -324,6 +394,35 @@ bot.command("start", async (ctx) => {
   await ctx.reply(text, { reply_markup: keyboard });
 });
 
+bot.command("my_status", async (ctx) => {
+  if (!ctx.from) return;
+  const telegramChatId = ctx.from.id;
+  const { user } = await getOrCreateUserAndProfileForTelegram(telegramChatId);
+
+  const emailAccount = await getEmailAccountForTelegramUser(telegramChatId);
+  const resumePath = await getLatestResumePathForTelegramUser(telegramChatId);
+  const links = await getLinksForTelegramUser(telegramChatId);
+
+  const events = getRecentUserEvents(user.id, 5);
+
+  let msg = "🧾 **Your setup status**\n\n";
+  msg += `${emailAccount ? "✅" : "⚠️"} Email connected\n`;
+  msg += `${resumePath ? "✅" : "⚠️"} Resume uploaded\n`;
+  msg += `✅ Profile text set (you can update with /set_profile)\n`;
+  msg += `${links.length ? "✅" : "ℹ️"} Links configured\n\n`;
+
+  if (events.length) {
+    msg += "**Recent activity:**\n";
+    events.forEach((e, i) => {
+      msg += `${i + 1}. ${e.type}${e.detail ? ` — ${e.detail}` : ""}\n`;
+    });
+  } else {
+    msg += "_No activity yet._";
+  }
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
 bot.command("job_hunt", async (ctx) => {
   if (!ctx.from) return;
 
@@ -426,6 +525,11 @@ bot.on("message:document", async (ctx) => {
 
   ctx.session.awaitingResumeUpload = false;
 
+  {
+    const { user } = await getOrCreateUserAndProfileForTelegram(telegramChatId);
+    logUserEvent(user.id, "resume_uploaded", path.basename(localPath));
+  }
+
   await ctx.reply(
     "✅ Resume uploaded and saved! I’ll attach this file for future applications that require a resume.",
   );
@@ -474,6 +578,12 @@ bot.on("message:text", async (ctx) => {
     ctx.session.awaitingEmailPassword = false;
     ctx.session.currentActionId = null;
 
+    {
+      const { user } =
+        await getOrCreateUserAndProfileForTelegram(telegramChatId);
+      logUserEvent(user.id, "email_connected", emailAddress);
+    }
+
     await ctx.reply(
       "✅ Email account connected! I’ll now send applications using this address.",
     );
@@ -492,6 +602,11 @@ bot.on("message:text", async (ctx) => {
     );
 
     ctx.session.awaitingProfileText = false;
+    {
+      const { user } =
+        await getOrCreateUserAndProfileForTelegram(telegramChatId);
+      logUserEvent(user.id, "profile_updated");
+    }
     await ctx.reply(
       "✅ Profile updated! I’ll use this new information for future match scores, emails and cover letters.",
     );
@@ -540,6 +655,11 @@ bot.on("message:text", async (ctx) => {
           : kind === "linkedin"
             ? "LinkedIn"
             : "Portfolio";
+      {
+        const { user } =
+          await getOrCreateUserAndProfileForTelegram(telegramChatId);
+        logUserEvent(user.id, "link_updated", `${kind}: ${url}`);
+      }
       await ctx.reply(`✅ ${labelPretty} URL updated.`);
     } else if (kind === "custom" && ctx.session.currentActionId) {
       const label = ctx.session.currentActionId;
@@ -554,6 +674,11 @@ bot.on("message:text", async (ctx) => {
             : undefined,
           from.username || undefined,
         );
+        {
+          const { user } =
+            await getOrCreateUserAndProfileForTelegram(telegramChatId);
+          logUserEvent(user.id, "link_added", `${label}: ${url}`);
+        }
         await ctx.reply(`✅ Custom link "${label}" saved.`);
       }
     }
@@ -957,13 +1082,19 @@ bot.callbackQuery(/^pickrole_(.+)_(\d+)$/, async (ctx) => {
   const idx = parseInt(ctx.match[2] || "0", 10);
   const pending = token ? pendingMultiRole.get(token) : null;
   if (!pending) {
-    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Session expired.",
+      show_alert: true,
+    });
     return;
   }
 
   const role = pending.roles[idx];
   if (!role) {
-    await ctx.answerCallbackQuery({ text: "Invalid role selection.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Invalid role selection.",
+      show_alert: true,
+    });
     return;
   }
 
@@ -991,14 +1122,20 @@ bot.callbackQuery(/^pickrole_(.+)_(\d+)$/, async (ctx) => {
 
 bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
   if (!ctx.from) {
-    await ctx.answerCallbackQuery({ text: "Missing user info.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Missing user info.",
+      show_alert: true,
+    });
     return;
   }
   const token = ctx.match[1];
   const idx = parseInt(ctx.match[2] || "0", 10);
   const pending = token ? pendingMultiRole.get(token) : null;
   if (!pending || !pending.googleFormUrl) {
-    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Session expired.",
+      show_alert: true,
+    });
     return;
   }
 
@@ -1033,7 +1170,9 @@ bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
   const fillCtx = {
     ...(role ? { roleTitle: role } : {}),
     ...(applicantName ? { applicantName } : {}),
-    ...(emailAccount?.email_address ? { applicantEmail: emailAccount.email_address } : {}),
+    ...(emailAccount?.email_address
+      ? { applicantEmail: emailAccount.email_address }
+      : {}),
     ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
     ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
     ...(github ? { githubUrl: github } : {}),
@@ -1046,12 +1185,24 @@ bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
   });
 
   if (result.success) {
+    const filledSummary =
+      `**Filled values (review):**\n` +
+      `- Role: ${role}\n` +
+      `- Applicant name: ${applicantName || "_not set_"}\n` +
+      `- Applicant email: ${emailAccount?.email_address || "_not set_"}\n` +
+      `- Referrer name: ${pending.referrerName || "_not detected_"}\n` +
+      `- Referrer email: ${pending.referrerEmail || "_not detected_"}\n` +
+      `- GitHub: ${github || "_not set_"}\n` +
+      `- LinkedIn: ${linkedin || "_not set_"}\n` +
+      `- Portfolio: ${portfolio || "_not set_"}\n`;
+
     const keyboard = new InlineKeyboard()
       .text("✅ Submit now", `submitform_${token}_${idx}`)
       .text("❌ Cancel", `pickrole_cancel_${token}`);
-    await ctx.editMessageText(`✅ ${result.message}\n\nIf everything looks correct, you can submit now.`, {
-      reply_markup: keyboard,
-    });
+    await ctx.editMessageText(
+      `✅ ${result.message}\n\n${filledSummary}\nIf everything looks correct, you can submit now.`,
+      { parse_mode: "Markdown", reply_markup: keyboard },
+    );
   } else {
     if (token) pendingMultiRole.delete(token);
     await ctx.editMessageText(`❌ ${result.message}`);
@@ -1061,14 +1212,20 @@ bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
 
 bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
   if (!ctx.from) {
-    await ctx.answerCallbackQuery({ text: "Missing user info.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Missing user info.",
+      show_alert: true,
+    });
     return;
   }
   const token = ctx.match[1];
   const idx = parseInt(ctx.match[2] || "0", 10);
   const pending = token ? pendingMultiRole.get(token) : null;
   if (!pending || !pending.googleFormUrl) {
-    await ctx.answerCallbackQuery({ text: "Session expired.", show_alert: true });
+    await ctx.answerCallbackQuery({
+      text: "Session expired.",
+      show_alert: true,
+    });
     return;
   }
 
@@ -1241,7 +1398,7 @@ bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
     }
 
     // Attach Cover Letter if we generated one
-    const attachments = [];
+    const attachments: { filename: string; path: string }[] = [];
     if (pending.coverLetterPath) {
       attachments.push({
         filename: "Cover_Letter.pdf",
@@ -1273,27 +1430,123 @@ bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
       attachments.push({ filename: finalName, path: resumePath });
     }
 
-    await ctx.editMessageText(
-      `🚀 Sending email to ${pending.jobData.applicationEmail} from ${emailAccount.email_address}...`,
-    );
+    const summary =
+      `**Confirm send**\n\n` +
+      `From: \`${emailAccount.email_address}\`\n` +
+      `To: \`${pending.jobData.applicationEmail}\`\n` +
+      `Role: ${pending.jobData.jobTitle}\n` +
+      `Subject: \`${pending.draft.subject}\`\n\n` +
+      `Proceed?`;
 
-    await sendApplicationEmailForUser(pending.userId, {
-      to: pending.jobData.applicationEmail,
-      subject: pending.draft.subject,
-      bodyText: pending.draft.bodyText,
-      attachments: attachments,
+    const keyboard = new InlineKeyboard()
+      .text("✅ Confirm send", `confirm_send_${actionId}`)
+      .text("❌ Cancel", `cancel_${actionId}`);
+
+    await ctx.editMessageText(summary, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
     });
-
-    await ctx.editMessageText(
-      `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\``,
-      { parse_mode: "Markdown" },
-    );
-
-    pendingEmails.delete(actionId);
   } catch (error) {
     console.error("Failed to send email via callback:", error);
     await ctx.answerCallbackQuery({
       text: "Failed to send email. Check console.",
+      show_alert: true,
+    });
+  }
+});
+
+bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
+  try {
+    const actionId = ctx.match[1];
+    if (!actionId) return;
+
+    const pending = pendingEmails.get(actionId);
+    if (!pending) {
+      await ctx.answerCallbackQuery({
+        text: "Email data expired or already sent.",
+        show_alert: true,
+      });
+      return;
+    }
+    if (!pending.jobData.applicationEmail) {
+      await ctx.answerCallbackQuery({
+        text: "No application email was found for this job.",
+        show_alert: true,
+      });
+      return;
+    }
+    if (!ctx.from) {
+      await ctx.answerCallbackQuery({
+        text: "Cannot resolve your user account. Try again.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const emailAccount = await getEmailAccountForTelegramUser(ctx.from.id);
+    if (!emailAccount) {
+      await ctx.answerCallbackQuery({
+        text: "You need to configure your email first via /set_email.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const attachments: { filename: string; path: string }[] = [];
+    if (pending.coverLetterPath) {
+      attachments.push({
+        filename: "Cover_Letter.pdf",
+        path: pending.coverLetterPath,
+      });
+    }
+
+    let resumePath: string | null = await getLatestResumePathForTelegramUser(
+      ctx.from.id,
+    );
+    if (
+      !resumePath &&
+      fs.existsSync(path.resolve(process.cwd(), "resume.pdf"))
+    ) {
+      resumePath = path.resolve(process.cwd(), "resume.pdf");
+    }
+    if (resumePath) {
+      const finalName = pending.customResumeName || "resume.pdf";
+      attachments.push({ filename: finalName, path: resumePath });
+    }
+
+    await ctx.editMessageText(
+      `🚀 Sending email to ${pending.jobData.applicationEmail} from ${emailAccount.email_address}...`,
+    );
+
+    const result = await withGlobalLimit(() =>
+      queueForUser(pending.userId, () =>
+        sendApplicationEmailForUser(pending.userId, {
+          to: pending.jobData.applicationEmail!,
+          subject: pending.draft.subject,
+          bodyText: pending.draft.bodyText,
+          attachments,
+        }),
+      ),
+    );
+
+    if (result.success) {
+      logUserEvent(pending.userId, "email_sent", pending.jobData.jobTitle);
+      await ctx.editMessageText(
+        `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\``,
+        { parse_mode: "Markdown" },
+      );
+      pendingEmails.delete(actionId);
+    } else {
+      await ctx.editMessageText(
+        `❌ Failed to send: ${result.error || "Unknown error"}`,
+      );
+    }
+
+    await ctx.answerCallbackQuery();
+  } catch (e) {
+    console.error(e);
+    await ctx.answerCallbackQuery({
+      text: "Failed to send email.",
       show_alert: true,
     });
   }
@@ -1331,6 +1584,10 @@ const BOT_MENU_COMMANDS = [
   {
     command: "job_hunt",
     description: "Manually trigger an automated job search (disabled)",
+  },
+  {
+    command: "my_status",
+    description: "See your setup status and recent activity",
   },
 ];
 
