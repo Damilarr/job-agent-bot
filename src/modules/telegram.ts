@@ -1443,6 +1443,7 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
 bot.callbackQuery("view_sample_profile", async (ctx) => {
   const sample =
     "Here’s a sample profile, you can copy this and edit to fit your own:\n\n" +
+    "Name: Jane Doe\n\n" +
     "Summary:\n" +
     "I’m a frontend engineer with 3+ years experience building React and Next.js apps, AI tooling, and UX-heavy dashboards. I care a lot about performance, DX, and making complex workflows feel simple.\n\n" +
     "Recent highlights:\n" +
@@ -1455,6 +1456,7 @@ bot.callbackQuery("view_sample_profile", async (ctx) => {
     "- Tools: Git, GCP, Prisma, MongoDB, Cloudflare R2/D1\n\n" +
     "Preferred roles:\n" +
     "Frontend / React / Next.js, remote-friendly.\n\n" +
+    "⚠️ Start with \"Name: Your Full Name\" — this is used as your applicant name on forms and emails.\n\n" +
     "When you’re ready, run /set_profile and paste your own version.";
 
   const sent = await ctx.reply(sample);
