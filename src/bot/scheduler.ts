@@ -1,8 +1,6 @@
-import cron from 'node-cron';
-import { runAutoApplyCycle } from './autoApply.js';
-import { getTodaysProcessedJobs, getAdminChatId } from '../data/db.js';
 import { Bot } from 'grammy';
 import { env } from '../config/env.js';
+import { getAdminChatId, getTodaysProcessedJobs } from '../data/db.js';
 
 /**
  * Initializes all background scheduled tasks.

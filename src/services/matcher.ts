@@ -1,17 +1,15 @@
-import { Type } from '@google/genai';
 import { aiService } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
-
 const evaluationSchema = {
-  type: Type.OBJECT,
+  type: "object",
   properties: {
     matchScore: {
-      type: Type.NUMBER,
+      type: "number",
       description: "An integer percentage (0-100) representing how well the candidate's CV matches the job requirements."
     },
     feedback: {
-      type: Type.STRING,
+      type: "string",
       description: "A short, actionable insight for the user explaining the score, highlighting matching/missing skills, and suggesting summary tweaks if necessary."
     }
   },
@@ -57,25 +55,25 @@ export async function evaluateMatch(
 
   try {
     const ai = aiService.getClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: evaluationSchema,
-        temperature: 0.2, // Low temperature for consistency
-      }
+    const response = await ai.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: prompt },
+        { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(evaluationSchema, null, 2) }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
     });
 
-    const resultText = response.text;
+    const resultText = response.choices[0]?.message?.content;
     if (!resultText) {
-      throw new Error("No text response from Gemini during match evaluation.");
+      throw new Error("No text response from Groq during match evaluation.");
     }
 
     const evaluation: MatchEvaluation = JSON.parse(resultText);
     return evaluation;
   } catch (error) {
     console.error("Error evaluating match:", error);
-    throw new Error("Failed to evaluate match via Gemini API.");
+    throw new Error("Failed to evaluate match via Groq API.");
   }
 }

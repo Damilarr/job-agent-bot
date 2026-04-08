@@ -1,43 +1,42 @@
-import { Type } from '@google/genai';
 import { aiService } from '../services/ai.js';
 
-// Define the expected output structure using Gemini's Schema
+// Define the expected output structure using standard JSON schema format
 const responseSchema = {
-  type: Type.OBJECT,
+  type: "object",
   properties: {
     jobTitle: {
-      type: Type.STRING,
+      type: "string",
       description: "The official title or role of the job."
     },
     companyName: {
-      type: Type.STRING,
+      type: "string",
       description: "The name of the company hiring, if explicitly stated. Null if not found.",
       nullable: true
     },
     companyValues: {
-      type: Type.STRING,
+      type: "string",
       description: "A short summary of any company values, mission, or 'about us' information mentioned in the JD. Null if not found.",
       nullable: true
     },
     keySkills: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
+      type: "array",
+      items: { type: "string" },
       description: "A list of essential technical and soft skills required for the job."
     },
     requiredExperience: {
-      type: Type.STRING,
+      type: "string",
       description: "The level or years of experience required (e.g., '3+ years', 'Senior level')."
     },
     applicationEmail: {
-      type: Type.STRING,
+      type: "string",
       description: "The email address to send the application to, if specified. Return null or empty string if not found."
     },
     requiresCoverLetter: {
-      type: Type.BOOLEAN,
+      type: "boolean",
       description: "True if the job requests or would benefit from a cover letter. For email applications, default to true unless it's clearly a quick referral."
     },
     requiresResume: {
-      type: Type.BOOLEAN,
+      type: "boolean",
       description: "True if this is a job application where attaching a resume would be expected. This includes any role where an application email is provided. Only false for informal referral requests or info-gathering forms."
     }
   },
@@ -81,19 +80,19 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
 
   try {
     const ai = aiService.getClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: responseSchema,
-        temperature: 0.1, // Low temperature for more deterministic extraction
-      }
+    const response = await ai.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: prompt },
+        { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(responseSchema, null, 2) }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
     });
 
-    const resultText = response.text;
+    const resultText = response.choices[0]?.message?.content;
     if (!resultText) {
-      throw new Error("No text response from Gemini.");
+      throw new Error("No text response from Groq.");
     }
 
     const parsedData: ParsedJobDescription = JSON.parse(resultText);
@@ -114,6 +113,6 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
     return parsedData;
   } catch (error) {
     console.error("Error parsing job description:", error);
-    throw new Error("Failed to parse job description via Gemini API.");
+    throw new Error("Failed to parse job description via Groq API.");
   }
 }

@@ -1,17 +1,15 @@
-import { Type } from '@google/genai';
 import { aiService } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
-
 const draftSchema = {
-  type: Type.OBJECT,
+  type: "object",
   properties: {
     subject: {
-      type: Type.STRING,
+      type: "string",
       description: "A professional and concise email subject line for the job application."
     },
     bodyText: {
-      type: Type.STRING,
+      type: "string",
       description: "The main body of the email in plain text style (using line breaks where appropriate)."
     }
   },
@@ -99,19 +97,19 @@ export async function generateEmailDraft(
 
   try {
     const ai = aiService.getClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: draftSchema,
-        temperature: 0.4, // Slightly higher temperature for more natural language generation
-      }
+    const response = await ai.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: prompt },
+        { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(draftSchema, null, 2) }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.4,
     });
 
-    const resultText = response.text;
+    const resultText = response.choices[0]?.message?.content;
     if (!resultText) {
-      throw new Error("No text response from Gemini during email draft generation.");
+      throw new Error("No text response from Groq during email draft generation.");
     }
 
     const draft: EmailDraft = JSON.parse(resultText);
@@ -149,24 +147,16 @@ export async function reviseEmailDraft(originalDraft: EmailDraft, feedback: stri
 
   try {
     const ai = aiService.getClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            subject: { type: Type.STRING },
-            bodyText: { type: Type.STRING }
-          },
-          required: ["subject", "bodyText"]
-        }
-      }
+    const response = await ai.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      response_format: { type: 'json_object' }
     });
 
-    const text = response.text;
-    if (!text) throw new Error("Empty response from Gemini.");
+    const text = response.choices[0]?.message?.content;
+    if (!text) throw new Error("Empty response from Groq.");
 
     return JSON.parse(text) as EmailDraft;
   } catch (error) {

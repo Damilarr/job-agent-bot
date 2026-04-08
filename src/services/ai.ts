@@ -1,27 +1,16 @@
-import { GoogleGenAI } from '@google/genai';
+import Groq from 'groq-sdk';
 import { env } from '../config/env.js';
 
 class AIService {
-  private clients: GoogleGenAI[];
-  private currentIndex: number = 0;
+  private client: Groq;
 
   constructor() {
-    this.clients = env.GEMINI_API_KEY.map(key => new GoogleGenAI({ apiKey: key }));
-    console.log(`🤖 AI Service initialized with ${this.clients.length} API keys.`);
+    this.client = new Groq({ apiKey: env.GROQ_API_KEY });
+    console.log(`🤖 AI Service initialized with Groq.`);
   }
 
-  /**
-   * Returns a Gemini client, rotating to the next one in the list for each call.
-   */
-  getClient(): GoogleGenAI {
-    if (this.clients.length === 0) {
-      throw new Error("No Gemini API keys configured.");
-    }
-    
-    const client = this.clients[this.currentIndex]!;
-    this.currentIndex = (this.currentIndex + 1) % this.clients.length;
-    
-    return client;
+  getClient(): Groq {
+    return this.client;
   }
 }
 

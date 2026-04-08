@@ -37,14 +37,16 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
 `;
 
   const ai = aiService.getClient();
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: prompt,
+  const response = await ai.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'user', content: prompt }
+    ],
   });
 
-  const markdownContent = response.text;
+  const markdownContent = response.choices[0]?.message?.content;
   if (!markdownContent) {
-    throw new Error("Gemini failed to generate cover letter markdown.");
+    throw new Error("Groq failed to generate cover letter markdown.");
   }
 
   // Convert the Markdown to PDF

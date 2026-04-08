@@ -1,152 +1,27 @@
 import { chromium, type Page } from "playwright-chromium";
-import { env } from "../config/env.js";
-import { aiService } from "../services/ai.js";
-import type { ParsedJobDescription } from "./parser.js";
-import { formatCVForPrompt, myCV } from "../data/cv.js";
+import { env } from "../../config/env.js";
+import { aiService } from "../../services/ai.js";
+import { hasUserProfile, getUserProfileDir, clearGoogleSessionMarker } from "./session.js";
+import { sanitizeGoogleFormQuestionLabel } from "./utils.js";
+import type { ParsedJobDescription } from "../../services/parser.js";
+import type { GoogleFormFillContext, GoogleFormFillOptions, FormFillResult, GoogleFormFilledField } from "./types.js";
 import path from "path";
 import fs from "fs";
-
-/** One row for the review: a question on the form and what we used */
-export interface GoogleFormFilledField {
-  label: string;
-  value: string;
-  kind: "text" | "file" | "radio" | "select";
-}
-
-export interface FormFillResult {
-  success: boolean;
-  message: string;
-  /** Best-effort: whether file inputs were satisfied */
-  fileUploads?: { resume: boolean; coverLetter: boolean };
-  /** Only fields on the form that we matched and filled (or uploaded) */
-  filledFields?: GoogleFormFilledField[];
-}
-
-export interface GoogleFormFillContext {
-  roleTitle?: string;
-  applicantName?: string;
-  applicantEmail?: string;
-  applicantPhone?: string;
-  referrerName?: string;
-  referrerEmail?: string;
-  githubUrl?: string;
-  linkedinUrl?: string;
-  portfolioUrl?: string;
-  /** Absolute paths for Google Forms file-upload questions */
-  resumePath?: string;
-  coverLetterPath?: string;
-}
-
-export interface GoogleFormFillOptions {
-  submit?: boolean;
-}
-
-function sanitizeGoogleFormQuestionLabel(raw: string): string {
-  let t = raw.trim();
-  t = t.replace(/\s*\*$/, "").trim();
-  t = t.replace(/\s*Required\s*$/i, "").trim();
-  const lines = t.split(/\n/).filter((l) => l.trim().length > 0);
-  const first = (lines[0] ?? t).trim();
-  return first.slice(0, 200);
-}
-
-/**
- * Automates logging in and filling out a job application on an ATS.
- */
-export async function autoFillApplication(
-  url: string,
-  jobDesc: ParsedJobDescription,
-): Promise<FormFillResult> {
-  let browser;
-  try {
-    // Determine ATS Platform
-    // IMPORTANT: LinkedIn URLs contain '/jobs/' but are NOT Greenhouse.
-    // Only match '/jobs/' for non-LinkedIn domains.
-    const isLinkedIn = url.includes("linkedin.com");
-    const isGreenhouse =
-      url.includes("boards.greenhouse.io") ||
-      (!isLinkedIn && url.includes("/jobs/")) ||
-      url.includes("dummy_greenhouse.html");
-    const isLever = url.includes("jobs.lever.co");
-
-    if (!isGreenhouse && !isLever) {
-      return {
-        success: false,
-        message: `Unsupported ATS or form format for URL: ${url}`,
-      };
-    }
-
-    browser = await chromium.launch({ headless: env.HEADLESS });
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    });
-
-    const page = await context.newPage();
-    console.log(`      🤖 Navigating to form: ${url}`);
-
-    // anti-scraping headers/stealth
-    await page.setExtraHTTPHeaders({
-      "Accept-Language": "en-US,en;q=0.9",
-    });
-
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-
-    if (url.includes("linkedin.com/jobs")) {
-      console.log(`      🛡️ Clearing LinkedIn popups...`);
-
-      //close the sign-in modal
-      try {
-        const closeBtn = page
-          .locator(
-            'button.artdeco-modal__dismiss, button[aria-label="Dismiss"], .modal__dismiss',
-          )
-          .first();
-        if (await closeBtn.isVisible({ timeout: 3000 })) {
-          await closeBtn.click({ force: true });
-          console.log(`      ✅ Dismissed modal.`);
-        }
-      } catch (e) {
-        // Not found, ignore
-      }
-
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(1000);
-    }
-
-    const cvText = formatCVForPrompt(myCV);
-
-    let targetPage = page;
-
-    if (isGreenhouse) {
-      return await handleGreenhouseForm(targetPage, context, jobDesc, cvText);
-    } else if (isLever) {
-      return await handleLeverForm(targetPage, context, jobDesc, cvText);
-    }
-
-    return { success: false, message: "Detection logic fell through." };
-  } catch (error: any) {
-    console.error("      ❌ Error during form autofill:", error);
-    return { success: false, message: `Playwright error: ${error.message}` };
-  } finally {
-    if (browser) {
-      if (env.HEADLESS) {
-        await browser.close();
-      }
-    }
-  }
-}
 
 /**
  * Best-effort Google Forms filler for referral / application forms.
  * This is intentionally heuristic-based and will not handle every form perfectly.
+ *
+ * If a telegramUserId is provided and has a saved browser profile, uses it to
+ * bypass Google sign-in walls. Otherwise, falls back to an ephemeral browser.
  */
 export async function autoFillGoogleForm(
   url: string,
   ctx: GoogleFormFillContext,
   options: GoogleFormFillOptions = {},
 ): Promise<FormFillResult> {
-  let browser;
+  let browser: any;
+  let persistentContext: any;
   let uploadedResume = false;
   let uploadedCover = false;
   const filledFields: GoogleFormFilledField[] = [];
@@ -155,12 +30,29 @@ export async function autoFillGoogleForm(
       return { success: false, message: `Not a Google Forms URL: ${url}` };
     }
 
-    browser = await chromium.launch({ headless: env.HEADLESS });
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    });
-    const page = await context.newPage();
+    let page;
+
+    // Use persistent profile if user has one (for sign-in-required forms)
+    const userId = options.telegramUserId;
+    if (userId && hasUserProfile(userId)) {
+      const profileDir = getUserProfileDir(userId);
+      persistentContext = await chromium.launchPersistentContext(profileDir, {
+        headless: env.HEADLESS,
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        args: ["--disable-blink-features=AutomationControlled"],
+      });
+      page = await persistentContext.newPage();
+      console.log(`      🔑 Using saved browser profile for user ${userId}`);
+    } else {
+      // Ephemeral browser (no saved session)
+      browser = await chromium.launch({ headless: env.HEADLESS });
+      const context = await browser.newContext({
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      });
+      page = await context.newPage();
+    }
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
@@ -174,10 +66,15 @@ export async function autoFillGoogleForm(
         0;
 
     if (isSignInWall) {
+      // If we had a profile but hit a sign-in wall, the session has expired
+      if (userId) {
+        clearGoogleSessionMarker(userId);
+      }
       return {
         success: false,
-        message:
-          "This Google Form requires sign-in to a Google account. Playwright cannot authenticate automatically — please open the form in your browser and fill it manually.",
+        message: userId
+          ? "Sign-in wall detected even with saved profile. Your session may have expired — use /connect_google to sign in again."
+          : "This Google Form requires sign-in. Use /connect_google to link your Google account first.",
       };
     }
 
@@ -503,204 +400,12 @@ export async function autoFillGoogleForm(
     console.error("      ❌ Error during Google Form autofill:", error);
     return { success: false, message: `Playwright error: ${error.message}` };
   } finally {
-    if (browser && env.HEADLESS) {
+    if (persistentContext) {
+      await persistentContext.close();
+    } else if (browser && env.HEADLESS) {
       await browser.close();
     }
   }
-}
-
-/**
- * Handles Greenhouse Boards
- */
-async function handleGreenhouseForm(
-  initialPage: Page,
-  context: any,
-  jobDesc: ParsedJobDescription,
-  cvText: string,
-): Promise<FormFillResult> {
-  console.log(`      🌿 Detected Greenhouse ATS (Attempting to interact)`);
-
-  let page = initialPage;
-  const applyButton = page
-    .locator('button.apply-button, a#apply_button, button:has-text("Apply")')
-    .first();
-  if (await applyButton.isVisible({ timeout: 15000 }).catch(() => false)) {
-    console.log(`      🖱️ Clicking Apply button...`);
-
-    // Listen for new tabs
-    const [newPage] = await Promise.all([
-      context.waitForEvent("page").catch(() => null),
-      applyButton.click({ force: true }),
-    ]);
-
-    if (newPage) {
-      console.log(`      📑 Apply button opened a new tab. Switching to it.`);
-      page = newPage;
-      await page.waitForLoadState();
-      await page.waitForTimeout(2000);
-    } else {
-      await page.waitForTimeout(2000);
-    }
-  }
-
-  if (
-    !(
-      page.url().includes("greenhouse.io") ||
-      (await page.locator('input[name="first_name"]').count()) > 0
-    )
-  ) {
-    return {
-      success: false,
-      message: "Could not reach the actual Greenhouse form.",
-    };
-  }
-
-  await fillInputIfExists(
-    page,
-    'input[name="first_name"]',
-    myCV.name.split(" ")[0] || "",
-  );
-  await fillInputIfExists(
-    page,
-    'input[name="last_name"]',
-    myCV.name.split(" ").slice(1).join(" ") || "",
-  );
-  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER ?? "");
-  await fillInputIfExists(page, 'input[name="phone"]', env.PHONE_NUMBER);
-
-  const fileInput = page.locator('input[type="file"]').first();
-  if (await fileInput.isVisible()) {
-    const resumePath = path.resolve(process.cwd(), "resume.pdf");
-    try {
-      await fileInput.setInputFiles(resumePath);
-      console.log(`      📎 Uploaded Resume successfully.`);
-      await page.waitForTimeout(1000);
-    } catch (e) {
-      console.warn(
-        `      ⚠️ Failed to upload resume automatically. Please do it manually if pausing.`,
-      );
-    }
-  }
-
-  await fillInputByLabelFallback(page, /linkedin/i, env.LINKEDIN_URL);
-  await fillInputByLabelFallback(page, /github|portfolio/i, env.GITHUB_URL);
-
-  // Handle Custom Textareas (e.g., "Why do you want to work here?")
-  await handleGenerateCustomAnswers(page, jobDesc, cvText);
-
-  if (env.HEADLESS) {
-    await page.click("button#submit_app");
-    await page.waitForSelector('text="Thank you for applying"', {
-      timeout: 10000,
-    });
-    return {
-      success: true,
-      message: "Greenhouse form submitted automatically.",
-    };
-  }
-
-  return {
-    success: true,
-    message: "Populated Greenhouse Form (Auto-Submit is disabled).",
-  };
-}
-
-/**
- * Handles Lever Boards
- */
-async function handleLeverForm(
-  initialPage: Page,
-  context: any,
-  jobDesc: ParsedJobDescription,
-  cvText: string,
-): Promise<FormFillResult> {
-  console.log(`      ⚙️ Detected Lever ATS`);
-
-  let page = initialPage;
-
-  const applyButton = page
-    .locator(
-      'button.apply-button, a#apply_button, button:has-text("Apply"), a.postings-btn:has-text("Apply")',
-    )
-    .first();
-  if (await applyButton.isVisible({ timeout: 15000 }).catch(() => false)) {
-    console.log(`      🖱️ Clicking Apply button...`);
-
-    const [newPage] = await Promise.all([
-      context.waitForEvent("page").catch(() => null),
-      applyButton.click({ force: true }),
-    ]);
-
-    if (newPage) {
-      console.log(`      📑 Apply button opened a new tab. Switching to it.`);
-      page = newPage;
-      await page.waitForLoadState();
-      await page.waitForTimeout(2000);
-    } else {
-      await page.waitForTimeout(2000);
-    }
-  }
-
-  if (
-    !(
-      page.url().includes("lever.co") ||
-      (await page.locator('input[name="name"]').count()) > 0
-    )
-  ) {
-    return {
-      success: false,
-      message: "Could not reach the actual Lever form.",
-    };
-  }
-
-  await fillInputIfExists(page, 'input[name="name"]', myCV.name);
-  await fillInputIfExists(page, 'input[name="email"]', env.GMAIL_USER ?? "");
-  await fillInputIfExists(page, 'input[name="phone"]', env.PHONE_NUMBER);
-  await fillInputIfExists(page, 'input[name="org"]', "Self");
-
-  await fillInputIfExists(
-    page,
-    'input[name="urls[LinkedIn]"]',
-    env.LINKEDIN_URL,
-  );
-  await fillInputIfExists(page, 'input[name="urls[GitHub]"]', env.GITHUB_URL);
-  if (env.PORTFOLIO_URL) {
-    await fillInputIfExists(
-      page,
-      'input[name="urls[Portfolio]"]',
-      env.PORTFOLIO_URL,
-    );
-  }
-
-  const fileInput = page
-    .locator('input[type="file"][data-qa="resume-upload-input"]')
-    .first();
-  if (await fileInput.isVisible({ timeout: 2000 })) {
-    const resumePath = path.resolve(process.cwd(), "resume.pdf");
-    try {
-      await fileInput.setInputFiles(resumePath);
-      console.log(`      📎 Uploaded Resume successfully.`);
-      await page.waitForTimeout(2000);
-    } catch (e) {
-      /* ignore */
-    }
-  }
-
-  //custom textareas
-  await handleGenerateCustomAnswers(page, jobDesc, cvText);
-
-  console.log(`      ✅ Lever form populated. Pausing before submit...`);
-
-  if (env.HEADLESS) {
-    await page.click('button[data-qa="btn-submit"]');
-    await page.waitForSelector(".application-success", { timeout: 10000 });
-    return { success: true, message: "Lever form submitted automatically." };
-  }
-
-  return {
-    success: true,
-    message: "Populated Lever Form (Auto-Submit is disabled).",
-  };
 }
 
 // === Helper Functions ===
@@ -797,12 +502,12 @@ async function handleGenerateCustomAnswers(
         `;
 
         try {
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { temperature: 0.3 },
+          const response = await ai.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.3,
           });
-          const answer = response.text?.trim() || "Please refer to my resume.";
+          const answer = response.choices[0]?.message?.content?.trim() || "Please refer to my resume.";
           await ta.fill(answer);
         } catch (e) {
           console.warn(`         ⚠️ Failed to generate AI answer for field.`);

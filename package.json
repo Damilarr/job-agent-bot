@@ -4,21 +4,20 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node --loader ts-node/esm index.ts",
-    "start:local": "node --loader ts-node/esm run-local.ts",
+    "start": "npx --yes tsx index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "AI-powered automated job application agent leveraging Playwright, Gemini AI, and Telegram for smart Google Form submissions with manual review workflow.",
   "dependencies": {
-    "@google/genai": "^1.44.0",
     "axios": "^1.13.6",
     "better-sqlite3": "^12.6.2",
     "cheerio": "^1.2.0",
     "dotenv": "^17.3.1",
     "grammy": "^1.41.1",
+    "groq-sdk": "^1.1.2",
     "md-to-pdf": "^5.2.5",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
@@ -30,6 +29,7 @@
     "@types/node": "^25.3.5",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^7.0.11",
+    "ts-morph": "^27.0.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }

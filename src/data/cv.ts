@@ -23,52 +23,32 @@ export interface MasterCV {
 
 
 export const myCV: MasterCV = {
-  name: "Emmanuel Adeyemo",
-  title: "Frontend Developer",
-  portfolio: "https://damilarr.dev",
-  summary: "A passionate Frontend Developer with experience building scalable web applications, AI-powered tools, and interactive user interfaces. Strong focus on modern JavaScript frameworks, performance optimization, and user-centric design.",
+  name: "John Doe",
+  title: "Software Engineer",
+  portfolio: "https://example.com",
+  summary: "A passionate Software Engineer with experience building scalable web applications. Strong focus on modern JavaScript frameworks, performance optimization, and user-centric design.",
   skills: {
-    languages: ["JavaScript", "TypeScript", "Dart", "HTML", "CSS"],
-    frameworks: ["React", "Next.js", "Flutter", "Material UI", "TailwindCSS"],
-    tools: ["Git", "Google Cloud Platform", "Cloudflare R2", "Cloudflare D1", "MongoDB", "Prisma", "NeonDB"],
+    languages: ["JavaScript", "TypeScript", "HTML", "CSS"],
+    frameworks: ["React", "Node.js", "Express", "TailwindCSS"],
+    tools: ["Git", "Docker", "AWS", "MongoDB"],
   },
   experience: [
     {
-      role: "Frontend Developer",
-      company: "MyAI Robotics LLC",
-      duration: "Oct 2024 – Nov 2025",
+      role: "Software Engineer",
+      company: "Tech Corp",
+      duration: "Jan 2020 – Present",
       highlights: [
-        "Engineered a content authentication system that renders bounding-box overlays on media previews to highlight verified vs. unverified segments.",
-        "Built a custom web search module integrating live data directly into the user's research workflow, ensuring up-to-date context for the AI agent.",
-        "Implemented a report generation engine that exports complex authentication data into formatted PDFs for client documentation."
-      ]
-    },
-    {
-      role: "Frontend Developer",
-      company: "Buildhubb (Tradeet)",
-      duration: "May 2024 – Oct 2024",
-      highlights: [
-        "Translated UI/UX designs into interactive, high-performance web components.",
-        "Collaborated with stakeholders to make strategic decisions for business growth.",
-        "Enhanced website functionalities to improve user engagement and retention."
-      ]
-    },
-    {
-      role: "Intern Frontend Developer",
-      company: "SQI College of ICT",
-      duration: "Nov 2022 – Apr 2023",
-      highlights: [
-        "Mentored students in HTML, CSS, and JavaScript, simplifying complex concepts for beginners.",
-        "Designed structured lesson plans and roadmaps to enhance student learning.",
-        "Provided hands-on debugging assistance, improving students' problem-solving skills."
+        "Developed scalable web components that improved user engagement by 20%.",
+        "Collaborated with cross-functional teams to integrate new features into the core product.",
+        "Mentored junior developers and performed code reviews."
       ]
     }
   ],
   education: [
     {
-      degree: "Bachelor of Engineering in Computer Engineering",
-      institution: "University of Ilorin",
-      graduationYear: "Present"
+      degree: "Bachelor of Science in Computer Science",
+      institution: "State University",
+      graduationYear: "2019"
     }
   ]
 };

@@ -1,5 +1,5 @@
-import { startBot } from './src/modules/telegram.js';
-import { startScheduler } from './src/modules/scheduler.js';
+import { startBot } from './src/bot/telegram.js';
+import { startScheduler } from './src/bot/scheduler.js';
 
 console.log("Starting the Job Agent Bot...");
 

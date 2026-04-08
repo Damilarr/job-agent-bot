@@ -1,15 +1,10 @@
 import { config } from "dotenv";
 import { z } from "zod";
 
-// Load environment variables from .env file
 config();
 
-// schema for environment variables
 const envSchema = z.object({
-  GEMINI_API_KEY: z
-    .string()
-    .min(1, "GEMINI_API_KEY is required")
-    .transform((val) => val.split(",").map((k) => k.trim())),
+  GROQ_API_KEY: z.string().min(1, "GROQ_API_KEY is required"),
   TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
   GMAIL_USER: z
     .string()
@@ -17,17 +12,6 @@ const envSchema = z.object({
     .optional(),
   GMAIL_APP_PASSWORD: z.string().optional(),
   EMAIL_ENCRYPTION_KEY: z.string().min(16).optional(),
-  // Form Auto-Fill required fields
-  PHONE_NUMBER: z.string().min(1, "PHONE_NUMBER is required for form filling"),
-  LINKEDIN_URL: z
-    .string()
-    .url("LINKEDIN_URL must be a valid URL")
-    .min(1, "LINKEDIN_URL is required"),
-  GITHUB_URL: z
-    .string()
-    .url("GITHUB_URL must be a valid URL")
-    .min(1, "GITHUB_URL is required"),
-  PORTFOLIO_URL: z.string().url("PORTFOLIO_URL must be a valid URL").optional(),
   HEADLESS: z
     .preprocess((val) => val === "true" || val === true, z.boolean())
     .default(true),
