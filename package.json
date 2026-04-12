@@ -12,15 +12,19 @@
   "license": "ISC",
   "description": "AI-powered automated job application agent leveraging Playwright, Gemini AI, and Telegram for smart Google Form submissions with manual review workflow.",
   "dependencies": {
+    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/client": "^7.7.0",
+    "@prisma/config": "^7.7.0",
     "axios": "^1.13.6",
     "better-sqlite3": "^12.6.2",
     "cheerio": "^1.2.0",
-    "dotenv": "^17.3.1",
+    "dotenv": "^17.4.1",
     "grammy": "^1.41.1",
     "groq-sdk": "^1.1.2",
     "md-to-pdf": "^5.2.5",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
+    "pg": "^8.20.0",
     "playwright-chromium": "^1.58.2",
     "zod": "^4.3.6"
   },
@@ -29,6 +33,7 @@
     "@types/node": "^25.3.5",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^7.0.11",
+    "prisma": "^7.7.0",
     "ts-morph": "^27.0.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

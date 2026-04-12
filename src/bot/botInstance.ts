@@ -68,3 +68,26 @@ export async function refreshBotMenu() {
     console.error("Failed to refresh bot menu:", e);
   }
 }
+
+const BOT_DESCRIPTION =
+  "I'm your AI-powered job application assistant! Send me a job description and I'll:\n\n" +
+  "📊 Score how well you match\n" +
+  "✍️ Draft a tailored application email\n" +
+  "📄 Generate a cover letter PDF\n" +
+  "📝 Auto-fill Google Form applications\n\n" +
+  "Type /start to get set up!";
+
+const BOT_SHORT_DESCRIPTION = "AI job application assistant — match scoring, email drafting, cover letters & Google Form auto-fill.";
+
+export async function setBotDescription() {
+  try {
+    await bot.api.setMyDescription(BOT_DESCRIPTION);
+    await bot.api.setMyShortDescription(BOT_SHORT_DESCRIPTION);
+  } catch (e) {
+    console.error("Failed to set bot description:", e);
+  }
+}
+
+bot.catch((err) => {
+  console.error("Error in middleware while handling update", err.error);
+});

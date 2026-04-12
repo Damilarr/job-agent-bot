@@ -1,8 +1,10 @@
 import { aiService } from "../../services/ai.js";
 import type { ScrapedFormQuestion, FormAnswerPlanItem, FormAnswerPlan } from "./types.js";
+import { getUserFormPlanCache, saveUserFormPlanCache } from "../../data/db.js";
+import { extractGoogleFormId } from "../../bot/utils.js";
 
 /**
- * Use Gemini AI to generate an answer plan for all scraped form questions.
+ * Use AI to generate an answer plan for all scraped form questions.
  */
 export async function generateFormAnswerPlan(
   questions: ScrapedFormQuestion[],
@@ -19,8 +21,19 @@ export async function generateFormAnswerPlan(
     roleTitle?: string | undefined;
     hasResume?: boolean | undefined;
     hasCoverLetter?: boolean | undefined;
+    telegramUserId?: number | undefined;
+    formUrl?: string | undefined;
   },
 ): Promise<FormAnswerPlan> {
+  const formId = context.formUrl ? extractGoogleFormId(context.formUrl) : null;
+  if (context.telegramUserId && formId) {
+    const cachedPlan = await getUserFormPlanCache(context.telegramUserId, formId);
+    if (cachedPlan) {
+      console.log(`[AI Cache] Hit for answer plan | User: ${context.telegramUserId} | Form: ${formId}`);
+      return cachedPlan as any;
+    }
+  }
+
   const ai = aiService.getClient();
 
   const questionsJSON = questions.map((q) => ({
@@ -104,7 +117,12 @@ Respond ONLY with a JSON array in this exact format, no other text:
     };
   });
 
-  return { formTitle, answers };
+  const finalPlan = { formTitle, answers };
+  if (context.telegramUserId && formId) {
+    await saveUserFormPlanCache(context.telegramUserId, formId, finalPlan);
+  }
+
+  return finalPlan;
 }
 
 /**

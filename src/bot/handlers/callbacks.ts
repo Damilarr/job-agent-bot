@@ -66,7 +66,7 @@ bot.callbackQuery(/^setappstatus_(\d+)_(\w+)$/, async (ctx) => {
   const status = (ctx.match[2] ?? "sent") as ApplicationStatus;
   const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
 
-  const updated = updateApplicationStatus(appId, user.id, status);
+  const updated = await updateApplicationStatus(appId, user.id, status);
   if (updated) {
     await ctx.editMessageText(
       `✅ Application #${appId} updated to *${status}*.`,
@@ -81,7 +81,7 @@ bot.callbackQuery(/^setappstatus_(\d+)_(\w+)$/, async (ctx) => {
 bot.callbackQuery("back_to_apps", async (ctx) => {
   if (!ctx.from) return;
   const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
-  const apps = getUserApplications(user.id, 20);
+  const apps = await getUserApplications(user.id, 20);
 
   const statusEmoji: Record<string, string> = {
     sent: "📨",
@@ -143,14 +143,14 @@ bot.callbackQuery("formreview_confirm", async (ctx) => {
 
     if (result.success) {
       const { user } = await getOrCreateUserAndProfileForTelegram(userId);
-      addUserApplication({
-        userId: user.id,
-        company: review.plan.formTitle || "Google Form",
-        role: review.plan.answers.find((a: any) => /role|position/i.test(a.label))?.answer || "Application",
-        method: "google_form",
-        destination: review.googleFormUrl,
-        matchScore: 0,
-      });
+      await addUserApplication({
+                userId: user.id,
+                company: review.plan.formTitle || "Google Form",
+                role: review.plan.answers.find((a: any) => /role|position/i.test(a.label))?.answer || "Application",
+                method: "google_form",
+                destination: review.googleFormUrl,
+                matchScore: 0,
+              });
 
       let msg = "✅ <b>Form submitted successfully!</b>\n\n";
       if (result.filledFields && result.filledFields.length > 0) {
@@ -579,13 +579,13 @@ bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
 
   if (result.success) {
     const { user } = await getOrCreateUserAndProfileForTelegram(from.id);
-    addUserApplication({
-      userId: user.id,
-      company: "Unknown",
-      role,
-      method: "google_form",
-      destination: pending.googleFormUrl ?? undefined,
-    });
+    await addUserApplication({
+            userId: user.id,
+            company: "Unknown",
+            role,
+            method: "google_form",
+            destination: pending.googleFormUrl ?? undefined,
+          });
   }
 
   if (token) pendingMultiRole.delete(token);
@@ -834,16 +834,16 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
     ) as { success: boolean; id?: string; error?: string };
 
     if (result.success) {
-      logUserEvent(pending.userId, "email_sent", pending.jobData.jobTitle);
-      addUserApplication({
-        userId: pending.userId,
-        company: pending.jobData.companyName || "Unknown",
-        role: pending.jobData.jobTitle,
-        method: "email",
-        ...(pending.jobData.applicationEmail ? { destination: pending.jobData.applicationEmail } : {}),
-        ...(pending.match?.matchScore != null ? { matchScore: pending.match.matchScore } : {}),
-        ...(pending.coverLetterPath ? { coverLetterPath: pending.coverLetterPath } : {}),
-      });
+      await logUserEvent(pending.userId, "email_sent", pending.jobData.jobTitle);
+      await addUserApplication({
+                userId: pending.userId,
+                company: pending.jobData.companyName || "Unknown",
+                role: pending.jobData.jobTitle,
+                method: "email",
+                ...(pending.jobData.applicationEmail ? { destination: pending.jobData.applicationEmail } : {}),
+                ...(pending.match?.matchScore != null ? { matchScore: pending.match.matchScore } : {}),
+                ...(pending.coverLetterPath ? { coverLetterPath: pending.coverLetterPath } : {}),
+              });
       await ctx.editMessageText(
         `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\`\n\nTracked in /my\\_applications.`,
         { parse_mode: "Markdown" },

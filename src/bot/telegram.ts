@@ -1,4 +1,4 @@
-import { bot, BOT_MENU_COMMANDS } from "./botInstance.js";
+import { bot, BOT_MENU_COMMANDS, setBotDescription } from "./botInstance.js";
 
 import "./handlers/callbacks.js";
 import "./handlers/commands.js";
@@ -11,10 +11,11 @@ export async function startBot() {
   } catch (e) {
     console.error("Failed to set bot menu commands:", e);
   }
+  await setBotDescription();
   bot.start();
   console.log("🤖 Job Agent Bot is running...");
   process.once("SIGINT", () => bot.stop());
   process.once("SIGTERM", () => bot.stop());
 }
 
-export { bot, refreshBotMenu } from "./botInstance.js";
+export { bot, refreshBotMenu, setBotDescription } from "./botInstance.js";

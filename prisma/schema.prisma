@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model processed_jobs {
+  id          String   @id
+  title       String
+  company     String
+  url         String
+  status      String
+  matchScore  Int?
+  processedAt DateTime @default(now())
+}
+
+model settings {
+  key   String @id
+  value String
+}
+
+model users {
+  id               Int       @id @default(autoincrement())
+  telegram_chat_id BigInt?   @unique
+  name             String?
+  username         String?
+  email            String?
+  created_at       DateTime  @default(now())
+
+  // Relations
+  profile          user_profiles?
+  assets           user_assets[]
+  links            user_links[]
+  email_account    user_email_accounts?
+  events           user_events[]
+  applications     user_applications[]
+  form_answers_cache user_form_answers_cache[]
+}
+
+model user_profiles {
+  user_id       Int      @id
+  cv_text       String
+  portfolio_url String?
+  phone         String?
+  github_url    String?
+  linkedin_url  String?
+  location      String?
+  target_roles  String?
+  updated_at    DateTime @default(now())
+
+  user          users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model user_assets {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  type       String
+  path       String
+  created_at DateTime @default(now())
+
+  user       users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model user_links {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  label      String
+  url        String
+  created_at DateTime @default(now())
+
+  user       users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model user_email_accounts {
+  user_id       Int      @id
+  provider      String
+  email_address String
+  smtp_host     String
+  smtp_port     Int
+  smtp_user     String
+  smtp_password String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @default(now())
+
+  user          users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model user_events {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  type       String
+  detail     String?
+  created_at DateTime @default(now())
+
+  user       users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model user_applications {
+  id                Int      @id @default(autoincrement())
+  user_id           Int
+  company           String
+  role              String
+  method            String
+  destination       String?
+  match_score       Int?
+  status            String   @default("sent")
+  cover_letter_path String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @default(now())
+
+  user              users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model form_scraping_cache {
+  form_id    String   @id
+  fields     Json
+  created_at DateTime @default(now())
+}
+
+model user_form_answers_cache {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  form_id    String
+  plan       Json
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  user       users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, form_id])
+}

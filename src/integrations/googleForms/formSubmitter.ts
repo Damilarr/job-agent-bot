@@ -84,11 +84,19 @@ export async function fillGoogleFormFromPlan(
             case "radio": {
               const radios = item.locator('[role="radio"]');
               const n = await radios.count();
+              const expected = answer.answer.trim().toLowerCase();
               for (let r = 0; r < n; r++) {
-                const label = ((await radios.nth(r).getAttribute("aria-label")) ||
-                  (await radios.nth(r).textContent().catch(() => "")) || "").trim();
-                if (label === answer.answer) {
-                  await radios.nth(r).click({ force: true });
+                const element = radios.nth(r);
+                const dataVal = (await element.getAttribute("data-value") || "").trim().toLowerCase();
+                const ariaLabel = (await element.getAttribute("aria-label") || "").trim().toLowerCase();
+                const textContent = (await element.textContent().catch(() => "") || "").trim().toLowerCase();
+                
+                const matched = [dataVal, ariaLabel, textContent].some(value => 
+                  value && (value === expected || (value.includes(expected) && expected.length > 0))
+                );
+
+                if (matched) {
+                  await element.click({ force: true });
                   filledFields.push({ label: answer.label, value: answer.answer, kind: "radio" });
                   break;
                 }
@@ -96,14 +104,23 @@ export async function fillGoogleFormFromPlan(
               break;
             }
             case "checkbox": {
-              const selections = answer.answer.split(" | ").map((s) => s.trim());
+              const selections = answer.answer.split(" | ").map((s) => s.trim().toLowerCase());
               const checks = item.locator('[role="checkbox"]');
               const n = await checks.count();
               for (let c = 0; c < n; c++) {
-                const label = ((await checks.nth(c).getAttribute("aria-label")) ||
-                  (await checks.nth(c).textContent().catch(() => "")) || "").trim();
-                if (selections.includes(label)) {
-                  await checks.nth(c).click({ force: true });
+                const element = checks.nth(c);
+                const dataVal = (await element.getAttribute("data-value") || "").trim().toLowerCase();
+                const ariaLabel = (await element.getAttribute("aria-label") || "").trim().toLowerCase();
+                const textContent = (await element.textContent().catch(() => "") || "").trim().toLowerCase();
+                
+                const matched = selections.some(expected => 
+                  [dataVal, ariaLabel, textContent].some(value => 
+                    value && (value === expected || (value.includes(expected) && expected.length > 0))
+                  )
+                );
+
+                if (matched) {
+                  await element.click({ force: true });
                 }
               }
               filledFields.push({ label: answer.label, value: answer.answer, kind: "radio" });
@@ -168,7 +185,7 @@ export async function fillGoogleFormFromPlan(
       for (const sel of submitSelectors) {
         const btn = page.locator(sel).first();
         if (await btn.isVisible().catch(() => false)) {
-          await btn.click({ force: true });
+          await btn.click({ force: true, noWaitAfter: true });
           await page.waitForTimeout(2000);
           break;
         }

@@ -13,14 +13,14 @@ export function startScheduler() {
  * Generates and sends the End of Day Report via Telegram
  */
 export async function sendEndOfDayReport() {
-  const adminChatId = getAdminChatId();
+  const adminChatId = await getAdminChatId();
   if (!adminChatId) {
     console.error("ADMIN_CHAT_ID is not set in DB. Cannot send end of day report.");
     return;
   }
 
   try {
-    const todayJobs = getTodaysProcessedJobs();
+    const todayJobs = await getTodaysProcessedJobs();
     
     if (todayJobs.length === 0) {
       const bot = new Bot(env.TELEGRAM_BOT_TOKEN);

@@ -1,105 +1,20 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+import { PrismaClient } from '@prisma/client';
+import type { users, user_profiles, user_assets, user_links, user_email_accounts } from '@prisma/client';
+import crypto from 'crypto';
 
-// Define the database file location in the root of the project, or mounted volume
-const dataDir = process.env.DATABASE_DIR || process.cwd();
-const dbPath = path.resolve(dataDir, 'jobs.sqlite');
+export type DBUser = users;
+export type DBUserProfile = user_profiles;
+export type DBUserAsset = user_assets;
+export type DBUserLink = user_links;
+export type DBUserEmailAccount = user_email_accounts;
 
-const db = new Database(dbPath);
-db.exec(`
-  CREATE TABLE IF NOT EXISTS processed_jobs (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    company TEXT NOT NULL,
-    url TEXT NOT NULL,
-    status TEXT NOT NULL, -- 'APPLIED', 'SKIPPED', 'FAILED'
-    matchScore INTEGER,
-    processedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
 
-  -- Multi-tenant core tables
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_chat_id INTEGER UNIQUE, -- nullable for non-Telegram users later
-    name TEXT,
-    username TEXT,
-    email TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS user_profiles (
-    user_id INTEGER PRIMARY KEY,
-    cv_text TEXT NOT NULL, -- formatted CV/profile text for LLM prompts
-    portfolio_url TEXT,
-    phone TEXT,
-    github_url TEXT,
-    linkedin_url TEXT,
-    location TEXT,
-    target_roles TEXT, -- comma-separated list for now
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS user_assets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    type TEXT NOT NULL, -- e.g. 'resume'
-    path TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS user_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    label TEXT NOT NULL,
-    url TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS user_email_accounts (
-    user_id INTEGER PRIMARY KEY,
-    provider TEXT NOT NULL,
-    email_address TEXT NOT NULL,
-    smtp_host TEXT NOT NULL,
-    smtp_port INTEGER NOT NULL,
-    smtp_user TEXT NOT NULL,
-    smtp_password TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS user_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    detail TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS user_applications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    company TEXT NOT NULL,
-    role TEXT NOT NULL,
-    method TEXT NOT NULL, -- 'email' | 'google_form' | 'manual'
-    destination TEXT, -- email address or form URL
-    match_score INTEGER,
-    status TEXT NOT NULL DEFAULT 'sent', -- 'sent' | 'replied' | 'interview' | 'offer' | 'rejected' | 'ghosted'
-    cover_letter_path TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-`);
+export const prisma = new PrismaClient({ adapter });
 
 export interface DBJobRecord {
   id: string; 
@@ -110,89 +25,17 @@ export interface DBJobRecord {
   matchScore: number | null;
 }
 
-export interface DBUser {
-  id: number;
-  telegram_chat_id: number | null;
-  name: string | null;
-  username: string | null;
-  email: string | null;
-}
-
-export interface DBUserProfile {
-  user_id: number;
-  cv_text: string;
-  portfolio_url: string | null;
-  phone: string | null;
-  github_url: string | null;
-  linkedin_url: string | null;
-  location: string | null;
-  target_roles: string | null;
-}
-
-export interface DBUserAsset {
-  id: number;
-  user_id: number;
-  type: string;
-  path: string;
-  created_at: string;
-}
-
-export interface DBUserLink {
-  id: number;
-  user_id: number;
-  label: string;
-  url: string;
-  created_at: string;
-}
-
-export interface DBUserEmailAccount {
-  user_id: number;
-  provider: string;
-  email_address: string;
-  smtp_host: string;
-  smtp_port: number;
-  smtp_user: string;
-  smtp_password: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface DBUserEvent {
-  id: number;
-  user_id: number;
-  type: string;
-  detail: string | null;
-  created_at: string;
-}
-
 export type ApplicationStatus = 'sent' | 'replied' | 'interview' | 'offer' | 'rejected' | 'ghosted';
-
-export interface DBUserApplication {
-  id: number;
-  user_id: number;
-  company: string;
-  role: string;
-  method: string;
-  destination: string | null;
-  match_score: number | null;
-  status: ApplicationStatus;
-  cover_letter_path: string | null;
-  created_at: string;
-  updated_at: string;
-}
 
 function deriveEncryptionKey(): Buffer | null {
   const raw = process.env.EMAIL_ENCRYPTION_KEY;
   if (!raw) return null;
-  // Derive a 32-byte key from any provided secret
-  const crypto = require('crypto') as typeof import('crypto');
   return crypto.createHash('sha256').update(raw).digest();
 }
 
 function encryptSecret(plaintext: string): string {
   const key = deriveEncryptionKey();
   if (!key) return plaintext;
-  const crypto = require('crypto') as typeof import('crypto');
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -206,7 +49,6 @@ function decryptSecret(stored: string): string {
   if (!key) {
     throw new Error('EMAIL_ENCRYPTION_KEY is required to decrypt stored email credentials');
   }
-  const crypto = require('crypto') as typeof import('crypto');
   const data = Buffer.from(stored.slice('enc:v1:'.length), 'base64');
   const iv = data.subarray(0, 12);
   const tag = data.subarray(12, 28);
@@ -217,179 +59,162 @@ function decryptSecret(stored: string): string {
   return dec.toString('utf8');
 }
 
-/**
- * Checks if a specific job ID has already been processed today (or ever).
- * To avoid re-applying, we check the global history.
- */
-export function hasJobBeenProcessed(jobId: string): boolean {
-  const stmt = db.prepare('SELECT id FROM processed_jobs WHERE id = ?');
-  const row = stmt.get(jobId);
-  return !!row;
+export async function hasJobBeenProcessed(jobId: string): Promise<boolean> {
+  const job = await prisma.processed_jobs.findUnique({
+    where: { id: jobId },
+    select: { id: true }
+  });
+  return !!job;
 }
 
-/**
- * Logs a processed job into the database.
- */
-export function logProcessedJob(record: DBJobRecord) {
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO processed_jobs (id, title, company, url, status, matchScore)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(record.id, record.title, record.company, record.url, record.status, record.matchScore);
+export async function logProcessedJob(record: DBJobRecord): Promise<void> {
+  await prisma.processed_jobs.upsert({
+    where: { id: record.id },
+    create: record,
+    update: record
+  });
 }
 
-/**
- * Retrieves all jobs processed today (local midnight to current time) for reporting.
- */
-export function getTodaysProcessedJobs(): any[] {
-  const stmt = db.prepare(`
-    SELECT * FROM processed_jobs 
-    WHERE date(processedAt, 'localtime') = date('now', 'localtime')
-  `);
-  return stmt.all();
+export async function getTodaysProcessedJobs(): Promise<any[]> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return prisma.processed_jobs.findMany({
+    where: { processedAt: { gte: today } }
+  });
 }
 
-/**
- * Resolves or creates a user row for a given Telegram chat.
- * This is the core primitive for multi-tenant behavior from the bot side.
- */
-export function getOrCreateUserByTelegramChat(
+export async function getOrCreateUserByTelegramChat(
   telegramChatId: number,
   name?: string,
   username?: string
-): DBUser {
-  const selectStmt = db.prepare('SELECT * FROM users WHERE telegram_chat_id = ?');
-  const existing = selectStmt.get(telegramChatId) as DBUser | undefined;
-  if (existing) {
-    return existing;
+): Promise<any> {
+  const existing = await prisma.users.findUnique({
+    where: { telegram_chat_id: telegramChatId }
+  });
+  
+  if (existing) return existing;
+  
+  return prisma.users.create({
+    data: {
+      telegram_chat_id: telegramChatId,
+      name: name || null,
+      username: username || null
+    }
+  });
+}
+
+export async function getUserProfile(userId: number): Promise<any | null> {
+  return prisma.user_profiles.findUnique({ where: { user_id: userId } });
+}
+
+export async function upsertUserProfile(profile: any): Promise<void> {
+  const data = {
+    cv_text: profile.cv_text,
+    portfolio_url: profile.portfolio_url,
+    phone: profile.phone,
+    github_url: profile.github_url,
+    linkedin_url: profile.linkedin_url,
+    location: profile.location,
+    target_roles: profile.target_roles,
+    updated_at: new Date()
+  };
+
+  await prisma.user_profiles.upsert({
+    where: { user_id: profile.user_id },
+    create: { user_id: profile.user_id, ...data },
+    update: data
+  });
+}
+
+export async function addUserAsset(userId: number, type: string, filePath: string): Promise<void> {
+  await prisma.user_assets.create({
+    data: {
+      user_id: userId,
+      type,
+      path: filePath
+    }
+  });
+}
+
+export async function getLatestUserAsset(userId: number, type: string): Promise<any | null> {
+  return prisma.user_assets.findFirst({
+    where: { user_id: userId, type },
+    orderBy: { created_at: 'desc' }
+  });
+}
+
+export async function upsertUserProfileLinksFromCoreFields(profile: any): Promise<void> {
+  await prisma.user_links.deleteMany({
+    where: {
+      user_id: profile.user_id,
+      label: { in: ['github', 'linkedin', 'portfolio'] }
+    }
+  });
+
+  const linksToCreate = [];
+  if (profile.github_url) linksToCreate.push({ user_id: profile.user_id, label: 'github', url: profile.github_url });
+  if (profile.linkedin_url) linksToCreate.push({ user_id: profile.user_id, label: 'linkedin', url: profile.linkedin_url });
+  if (profile.portfolio_url) linksToCreate.push({ user_id: profile.user_id, label: 'portfolio', url: profile.portfolio_url });
+
+  if (linksToCreate.length > 0) {
+    await prisma.user_links.createMany({ data: linksToCreate });
   }
-
-  const insertStmt = db.prepare(
-    `INSERT INTO users (telegram_chat_id, name, username) VALUES (?, ?, ?)`
-  );
-  const result = insertStmt.run(telegramChatId, name || null, username || null);
-
-  const createdId = Number(result.lastInsertRowid);
-  const createdUserStmt = db.prepare('SELECT * FROM users WHERE id = ?');
-  const created = createdUserStmt.get(createdId) as DBUser | undefined;
-  if (!created) {
-    throw new Error('Failed to create user record');
-  }
-  return created;
 }
 
-/**
- * Fetches a user profile if it exists.
- */
-export function getUserProfile(userId: number): DBUserProfile | null {
-  const stmt = db.prepare('SELECT * FROM user_profiles WHERE user_id = ?');
-  const row = stmt.get(userId) as DBUserProfile | undefined;
-  return row || null;
+export async function addCustomUserLink(userId: number, label: string, url: string): Promise<void> {
+  await prisma.user_links.create({
+    data: { user_id: userId, label, url }
+  });
 }
 
-/**
- * Creates or updates a user profile row.
- * For now this is a simple upsert keyed by user_id.
- */
-export function upsertUserProfile(profile: DBUserProfile): void {
-  const stmt = db.prepare(
-    `
-      INSERT INTO user_profiles (user_id, cv_text, portfolio_url, phone, github_url, linkedin_url, location, target_roles, updated_at)
-      VALUES (@user_id, @cv_text, @portfolio_url, @phone, @github_url, @linkedin_url, @location, @target_roles, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_id) DO UPDATE SET
-        cv_text = excluded.cv_text,
-        portfolio_url = excluded.portfolio_url,
-        phone = excluded.phone,
-        github_url = excluded.github_url,
-        linkedin_url = excluded.linkedin_url,
-        location = excluded.location,
-        target_roles = excluded.target_roles,
-        updated_at = CURRENT_TIMESTAMP
-    `
-  );
-
-  stmt.run(profile);
+export async function getUserLinks(userId: number): Promise<any[]> {
+  return prisma.user_links.findMany({
+    where: { user_id: userId },
+    orderBy: { created_at: 'desc' }
+  });
 }
 
-export function addUserAsset(userId: number, type: string, filePath: string): void {
-  const stmt = db.prepare(
-    `INSERT INTO user_assets (user_id, type, path) VALUES (?, ?, ?)`
-  );
-  stmt.run(userId, type, filePath);
+export async function upsertUserEmailAccount(account: any): Promise<void> {
+  const encPass = encryptSecret(account.smtp_password);
+  
+  const data = {
+    provider: account.provider,
+    email_address: account.email_address,
+    smtp_host: account.smtp_host,
+    smtp_port: account.smtp_port,
+    smtp_user: account.smtp_user,
+    smtp_password: encPass,
+    updated_at: new Date()
+  };
+
+  await prisma.user_email_accounts.upsert({
+    where: { user_id: account.user_id },
+    create: { user_id: account.user_id, ...data },
+    update: data
+  });
 }
 
-export function getLatestUserAsset(userId: number, type: string): DBUserAsset | null {
-  const stmt = db.prepare(`
-      SELECT * FROM user_assets
-      WHERE user_id = ? AND type = ?
-      ORDER BY datetime(created_at) DESC
-      LIMIT 1
-    `);
-  const row = stmt.get(userId, type) as DBUserAsset | undefined;
-  return row || null;
-}
-
-export function upsertUserProfileLinksFromCoreFields(profile: DBUserProfile): void {
-  // keep a simple mirror of core URLs in user_links for easier querying later if needed
-  const stmtDelete = db.prepare('DELETE FROM user_links WHERE user_id = ? AND label IN (?, ?, ?)');
-  stmtDelete.run(profile.user_id, 'github', 'linkedin', 'portfolio');
-
-  const insert = db.prepare(
-    'INSERT INTO user_links (user_id, label, url) VALUES (?, ?, ?)'
-  );
-
-  if (profile.github_url) insert.run(profile.user_id, 'github', profile.github_url);
-  if (profile.linkedin_url) insert.run(profile.user_id, 'linkedin', profile.linkedin_url);
-  if (profile.portfolio_url) insert.run(profile.user_id, 'portfolio', profile.portfolio_url);
-}
-
-export function addCustomUserLink(userId: number, label: string, url: string): void {
-  const stmt = db.prepare(
-    'INSERT INTO user_links (user_id, label, url) VALUES (?, ?, ?)'
-  );
-  stmt.run(userId, label, url);
-}
-
-export function getUserLinks(userId: number): DBUserLink[] {
-  const stmt = db.prepare('SELECT * FROM user_links WHERE user_id = ? ORDER BY datetime(created_at) DESC');
-  return stmt.all(userId) as DBUserLink[];
-}
-
-export function upsertUserEmailAccount(account: Omit<DBUserEmailAccount, 'created_at' | 'updated_at'>): void {
-  const stmt = db.prepare(`
-    INSERT INTO user_email_accounts (user_id, provider, email_address, smtp_host, smtp_port, smtp_user, smtp_password, created_at, updated_at)
-    VALUES (@user_id, @provider, @email_address, @smtp_host, @smtp_port, @smtp_user, @smtp_password, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ON CONFLICT(user_id) DO UPDATE SET
-      provider = excluded.provider,
-      email_address = excluded.email_address,
-      smtp_host = excluded.smtp_host,
-      smtp_port = excluded.smtp_port,
-      smtp_user = excluded.smtp_user,
-      smtp_password = excluded.smtp_password,
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  stmt.run({ ...account, smtp_password: encryptSecret(account.smtp_password) });
-}
-
-export function getUserEmailAccount(userId: number): DBUserEmailAccount | null {
-  const stmt = db.prepare('SELECT * FROM user_email_accounts WHERE user_id = ?');
-  const row = stmt.get(userId) as DBUserEmailAccount | undefined;
+export async function getUserEmailAccount(userId: number): Promise<any | null> {
+  const row = await prisma.user_email_accounts.findUnique({ where: { user_id: userId } });
   if (!row) return null;
   return { ...row, smtp_password: decryptSecret(row.smtp_password) };
 }
 
-export function logUserEvent(userId: number, type: string, detail?: string): void {
-  const stmt = db.prepare('INSERT INTO user_events (user_id, type, detail) VALUES (?, ?, ?)');
-  stmt.run(userId, type, detail || null);
+export async function logUserEvent(userId: number, type: string, detail?: string): Promise<void> {
+  await prisma.user_events.create({
+    data: { user_id: userId, type, detail: detail || null }
+  });
 }
 
-export function getRecentUserEvents(userId: number, limit: number = 10): DBUserEvent[] {
-  const stmt = db.prepare('SELECT * FROM user_events WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT ?');
-  return stmt.all(userId, limit) as DBUserEvent[];
+export async function getRecentUserEvents(userId: number, limit: number = 10): Promise<any[]> {
+  return prisma.user_events.findMany({
+    where: { user_id: userId },
+    orderBy: { created_at: 'desc' },
+    take: limit
+  });
 }
 
-export function addUserApplication(app: {
+export async function addUserApplication(app: {
   userId: number;
   company: string;
   role: string;
@@ -397,74 +222,86 @@ export function addUserApplication(app: {
   destination?: string;
   matchScore?: number;
   coverLetterPath?: string;
-}): DBUserApplication {
-  const stmt = db.prepare(`
-    INSERT INTO user_applications (user_id, company, role, method, destination, match_score, cover_letter_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  const result = stmt.run(
-    app.userId,
-    app.company,
-    app.role,
-    app.method,
-    app.destination || null,
-    app.matchScore ?? null,
-    app.coverLetterPath || null,
-  );
-  const row = db.prepare('SELECT * FROM user_applications WHERE id = ?').get(
-    Number(result.lastInsertRowid),
-  ) as DBUserApplication;
-  return row;
+}): Promise<any> {
+  return prisma.user_applications.create({
+    data: {
+      user_id: app.userId,
+      company: app.company,
+      role: app.role,
+      method: app.method,
+      destination: app.destination || null,
+      match_score: app.matchScore ?? null,
+      cover_letter_path: app.coverLetterPath || null
+    }
+  });
 }
 
-export function getUserApplications(
-  userId: number,
-  limit: number = 20,
-): DBUserApplication[] {
-  const stmt = db.prepare(
-    'SELECT * FROM user_applications WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT ?',
-  );
-  return stmt.all(userId, limit) as DBUserApplication[];
+export async function getUserApplications(userId: number, limit: number = 20): Promise<any[]> {
+  return prisma.user_applications.findMany({
+    where: { user_id: userId },
+    orderBy: { created_at: 'desc' },
+    take: limit
+  });
 }
 
-export function updateApplicationStatus(
-  applicationId: number,
-  userId: number,
-  status: ApplicationStatus,
-): boolean {
-  const stmt = db.prepare(
-    'UPDATE user_applications SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
-  );
-  const result = stmt.run(status, applicationId, userId);
-  return result.changes > 0;
+export async function updateApplicationStatus(applicationId: number, userId: number, status: ApplicationStatus): Promise<boolean> {
+  try {
+    await prisma.user_applications.updateMany({
+      where: { id: applicationId, user_id: userId },
+      data: { status, updated_at: new Date() }
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
-export function getUserApplicationById(
-  applicationId: number,
-  userId: number,
-): DBUserApplication | null {
-  const stmt = db.prepare(
-    'SELECT * FROM user_applications WHERE id = ? AND user_id = ?',
-  );
-  return (stmt.get(applicationId, userId) as DBUserApplication) || null;
+export async function getUserApplicationById(applicationId: number, userId: number): Promise<any | null> {
+  const rows = await prisma.user_applications.findMany({
+    where: { id: applicationId, user_id: userId }
+  });
+  return rows[0] || null;
 }
 
-/**
- * Saves the Admin Chat ID to the database so background jobs know who to message.
- */
-export function saveAdminChatId(chatId: number) {
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO settings (key, value)
-    VALUES ('ADMIN_CHAT_ID', ?)
-  `);
-  stmt.run(chatId.toString());
+export async function saveAdminChatId(chatId: number): Promise<void> {
+  await prisma.settings.upsert({
+    where: { key: 'ADMIN_CHAT_ID' },
+    create: { key: 'ADMIN_CHAT_ID', value: chatId.toString() },
+    update: { value: chatId.toString() }
+  });
 }
 
-/**
- * Retrieves the Admin Chat ID. Returns null if not set.
- */
-export function getAdminChatId(): string | null {
-  const stmt = db.prepare(`SELECT value FROM settings WHERE key = 'ADMIN_CHAT_ID'`);
-  const row = stmt.get() as { value: string } | undefined;
+export async function getAdminChatId(): Promise<string | null> {
+  const row = await prisma.settings.findUnique({ where: { key: 'ADMIN_CHAT_ID' } });
   return row ? row.value : null;
+}
+
+export async function getFormFieldsCache(formId: string): Promise<any | null> {
+  const cache = await prisma.form_scraping_cache.findUnique({
+    where: { form_id: formId }
+  });
+  return cache ? (cache.fields as any) : null;
+}
+
+export async function saveFormFieldsCache(formId: string, fields: any): Promise<void> {
+  await prisma.form_scraping_cache.upsert({
+    where: { form_id: formId },
+    create: { form_id: formId, fields },
+    update: { fields }
+  });
+}
+
+export async function getUserFormPlanCache(userId: number, formId: string): Promise<any | null> {
+  const cache = await prisma.user_form_answers_cache.findUnique({
+    where: { user_id_form_id: { user_id: userId, form_id: formId } }
+  });
+  return cache ? (cache.plan as any) : null;
+}
+
+export async function saveUserFormPlanCache(userId: number, formId: string, plan: any): Promise<void> {
+  await prisma.user_form_answers_cache.upsert({
+    where: { user_id_form_id: { user_id: userId, form_id: formId } },
+    create: { user_id: userId, form_id: formId, plan },
+    update: { plan, updated_at: new Date() }
+  });
 }

@@ -49,7 +49,7 @@ bot.command("start", async (ctx) => {
   );
 
   const adminId = ctx.from.id;
-  saveAdminChatId(adminId);
+  await saveAdminChatId(adminId);
 
   const emailAccount = await getEmailAccountForTelegramUser(
     ctx.from.id,
@@ -112,7 +112,7 @@ bot.command("my_status", async (ctx) => {
   const resumePath = await getLatestResumePathForTelegramUser(telegramChatId);
   const links = await getLinksForTelegramUser(telegramChatId);
 
-  const events = getRecentUserEvents(user.id, 5);
+  const events = await getRecentUserEvents(user.id, 5);
 
   const isGoogleConnected = await isGoogleSessionValid(telegramChatId);
 
@@ -138,7 +138,7 @@ bot.command("my_status", async (ctx) => {
 bot.command("my_applications", async (ctx) => {
   if (!ctx.from) return;
   const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
-  const apps = getUserApplications(user.id, 20);
+  const apps = await getUserApplications(user.id, 20);
 
   if (!apps.length) {
     await ctx.reply("📋 No applications tracked yet. Send a JD to get started!");
@@ -157,7 +157,7 @@ bot.command("my_applications", async (ctx) => {
   let msg = "<b>📋 Your Applications</b>\n\n";
   for (const app of apps) {
     const emoji = statusEmoji[app.status] || "📨";
-    const date = app.created_at.slice(0, 10);
+    const date = app.created_at instanceof Date ? app.created_at.toISOString().slice(0, 10) : String(app.created_at).slice(0, 10);
     const score = app.match_score != null ? ` (${app.match_score}%)` : "";
     msg += `${emoji} <b>#${app.id}</b> ${escapeHtml(app.role)} @ ${escapeHtml(app.company)}${score}\n`;
     msg += `   ${app.method} · ${app.status} · ${date}\n`;
@@ -207,7 +207,7 @@ bot.command("update_status", async (ctx) => {
     return;
   }
 
-  const updated = updateApplicationStatus(appId, user.id, newStatus);
+  const updated = await updateApplicationStatus(appId, user.id, newStatus);
   if (updated) {
     await ctx.reply(`✅ Application #${appId} updated to *${newStatus}*.`, {
       parse_mode: "Markdown",
@@ -372,7 +372,7 @@ bot.command("download_resume", async (ctx) => {
 bot.command("download_cover_letter", async (ctx) => {
   if (!ctx.from) return;
   const { user } = await getOrCreateUserAndProfileForTelegram(ctx.from.id);
-  const apps = getUserApplications(user.id, 10);
+  const apps = await getUserApplications(user.id, 10);
   const latest = apps.find(
     (a) => a.cover_letter_path && fs.existsSync(a.cover_letter_path),
   );

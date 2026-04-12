@@ -32,7 +32,7 @@ export async function sendApplicationEmailForUser(
   payload: EmailPayload,
 ): Promise<{ success: boolean; id?: string; error?: string }> {
   try {
-    const account = getUserEmailAccount(userId);
+    const account = await getUserEmailAccount(userId);
     if (!account) {
       return {
         success: false,

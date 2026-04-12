@@ -55,6 +55,11 @@ function extractGoogleFormUrl(text: string): string | null {
   return m ? m[0] : null;
 }
 
+function extractGoogleFormId(url: string): string | null {
+  const m = url.match(/\/forms\/d\/(?:e\/)?([a-zA-Z0-9_-]+)/i);
+  return m ? (m[1] || null) : null;
+}
+
 function extractRoles(text: string): string[] {
   const lines = text
     .split("\n")
@@ -379,8 +384,8 @@ function formatPlanPreview(plan: FormAnswerPlan): string {
       ? `[${a.fileKind === "resume" ? "📄 Resume file" : "📄 Cover letter file"}]`
       : escapeHtml(a.answer || "(empty)");
 
-    const truncated = answerDisplay.length > 200
-      ? answerDisplay.slice(0, 197) + "..."
+    const truncated = answerDisplay.length > 2000
+      ? answerDisplay.slice(0, 1997) + "..."
       : answerDisplay;
 
     msg += `<b>Q${a.index + 1}:</b> ${escapeHtml(a.label)}\n`;
@@ -395,4 +400,4 @@ function formatPlanPreview(plan: FormAnswerPlan): string {
   return msg;
 }
 
-export { buildGoogleFormFillContext, escapeHtml, extractGoogleFormUrl, extractReferrerDetails, extractRoles, formatPlanPreview, looksLikeJobDescription, maybeGenerateCoverLetterForGoogleForm, resolveResumePathForUser, startSetEmail, startSetLinks, startSetProfile, startSetResume };
+export { buildGoogleFormFillContext, escapeHtml, extractGoogleFormId, extractGoogleFormUrl, extractReferrerDetails, extractRoles, formatPlanPreview, looksLikeJobDescription, maybeGenerateCoverLetterForGoogleForm, resolveResumePathForUser, startSetEmail, startSetLinks, startSetProfile, startSetResume };

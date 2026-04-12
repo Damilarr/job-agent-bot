@@ -13,23 +13,17 @@ import {
   getUserEmailAccount,
 } from './db.js';
 
-/**
- * High-level helper to resolve a user + profile for a Telegram chat.
- * For now, if no profile exists, we seed it from the existing single-user CV (myCV),
- * so current behavior stays the same while allowing per-user overrides later.
- */
-
 export async function getOrCreateUserAndProfileForTelegram(
   telegramChatId: number,
   name?: string,
   username?: string
-): Promise<{ user: DBUser; profile: DBUserProfile }> {
-  const user = getOrCreateUserByTelegramChat(telegramChatId, name, username);
+): Promise<{ user: any; profile: any }> {
+  const user = await getOrCreateUserByTelegramChat(telegramChatId, name, username);
 
-  let profile = getUserProfile(user.id);
+  let profile = await getUserProfile(user.id);
   if (!profile) {
     const cvText = formatCVForPrompt(myCV);
-    const seededProfile: DBUserProfile = {
+    const seededProfile = {
       user_id: user.id,
       cv_text: cvText,
       portfolio_url: myCV.portfolio || null,
@@ -40,17 +34,13 @@ export async function getOrCreateUserAndProfileForTelegram(
       target_roles: null,
     };
 
-    upsertUserProfile(seededProfile);
+    await upsertUserProfile(seededProfile);
     profile = seededProfile;
   }
 
   return { user, profile };
 }
 
-/**
- * Convenience accessor that just returns the cv_text for a user,
- * ensuring it exists (again seeding from myCV if needed).
- */
 export async function getProfileTextForUserByTelegramChat(
   telegramChatId: number,
   name?: string,
@@ -64,34 +54,29 @@ export async function getProfileTextForUserByTelegramChat(
   return profile.cv_text;
 }
 
-/**
- * Updates the stored profile text (and optionally portfolio URL) for a Telegram user
- * based on raw text they send (e.g. pasted CV, bio, links).
- */
 export async function updateProfileFromTextForTelegram(
   telegramChatId: number,
   text: string,
   name?: string,
   username?: string
-): Promise<DBUserProfile> {
+): Promise<any> {
   const { user, profile } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
     username
   );
 
-  // Naive URL extraction: first http(s) URL in the text is treated as portfolio link
   const urlMatch = text.match(/https?:\/\/\S+/);
   const portfolioUrl = urlMatch?.[0] ?? profile.portfolio_url ?? null;
 
-  const updated: DBUserProfile = {
+  const updated = {
     ...profile,
     cv_text: text,
     portfolio_url: portfolioUrl,
   };
 
-  upsertUserProfile(updated);
-  upsertUserProfileLinksFromCoreFields(updated);
+  await upsertUserProfile(updated);
+  await upsertUserProfileLinksFromCoreFields(updated);
   return updated;
 }
 
@@ -100,35 +85,27 @@ export async function saveResumeForTelegramUser(
   localPath: string,
   name?: string,
   username?: string
-): Promise<DBUserAsset> {
+): Promise<any> {
   const { user } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
     username
   );
 
-  addUserAsset(user.id, 'resume', localPath);
-  const latest = getLatestUserAsset(user.id, 'resume');
+  await addUserAsset(user.id, 'resume', localPath);
+  const latest = await getLatestUserAsset(user.id, 'resume');
   if (!latest) {
     throw new Error('Failed to persist resume asset for user');
   }
   return latest;
 }
 
-/**
- * Parses a display/legal name from profile CV text.
- * Expects a line like `Name: Jane Doe` (common in /set_profile and seeded CV format).
- */
 export function extractDisplayNameFromCvText(cvText: string): string | null {
   const m = cvText.match(/^\s*Name:\s*(.+)$/im);
   const raw = m?.[1]?.trim();
   return raw || null;
 }
 
-/**
- * Prefer the name from your stored profile/CV; fall back to Telegram first/last only if no Name: line exists.
- * Does not use Telegram @username as your legal name.
- */
 export async function resolveApplicantDisplayNameForForms(
   telegramChatId: number,
   opts?: {
@@ -168,7 +145,7 @@ export async function getLatestResumePathForTelegramUser(
     username
   );
 
-  const asset = getLatestUserAsset(user.id, 'resume');
+  const asset = await getLatestUserAsset(user.id, 'resume');
   return asset ? asset.path : null;
 }
 
@@ -178,22 +155,22 @@ export async function setCoreLinkForTelegramUser(
   url: string,
   name?: string,
   username?: string
-): Promise<DBUserProfile> {
+): Promise<any> {
   const { user, profile } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
     username
   );
 
-  const updated: DBUserProfile = {
+  const updated = {
     ...profile,
     github_url: kind === 'github' ? url : profile.github_url,
     linkedin_url: kind === 'linkedin' ? url : profile.linkedin_url,
     portfolio_url: kind === 'portfolio' ? url : profile.portfolio_url,
   };
 
-  upsertUserProfile(updated);
-  upsertUserProfileLinksFromCoreFields(updated);
+  await upsertUserProfile(updated);
+  await upsertUserProfileLinksFromCoreFields(updated);
   return updated;
 }
 
@@ -203,16 +180,16 @@ export async function addCustomLinkForTelegramUser(
   url: string,
   name?: string,
   username?: string
-): Promise<DBUserLink> {
+): Promise<any> {
   const { user } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
     username
   );
 
-  addCustomUserLink(user.id, label, url);
+  await addCustomUserLink(user.id, label, url);
 
-  const links = getUserLinks(user.id);
+  const links = await getUserLinks(user.id);
   return links[0]!;
 }
 
@@ -220,7 +197,7 @@ export async function getLinksForTelegramUser(
   telegramChatId: number,
   name?: string,
   username?: string
-): Promise<DBUserLink[]> {
+): Promise<any[]> {
   const { user } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
@@ -239,14 +216,14 @@ export async function upsertEmailAccountForTelegramUser(
   smtpPassword: string,
   name?: string,
   username?: string
-): Promise<DBUserEmailAccount> {
+): Promise<any> {
   const { user } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
     username
   );
 
-  upsertUserEmailAccount({
+  await upsertUserEmailAccount({
     user_id: user.id,
     provider,
     email_address: emailAddress,
@@ -256,7 +233,7 @@ export async function upsertEmailAccountForTelegramUser(
     smtp_password: smtpPassword,
   });
 
-  const account = getUserEmailAccount(user.id);
+  const account = await getUserEmailAccount(user.id);
   if (!account) {
     throw new Error('Failed to save email account for user');
   }
@@ -267,7 +244,7 @@ export async function getEmailAccountForTelegramUser(
   telegramChatId: number,
   name?: string,
   username?: string
-): Promise<DBUserEmailAccount | null> {
+): Promise<any | null> {
   const { user } = await getOrCreateUserAndProfileForTelegram(
     telegramChatId,
     name,
@@ -275,5 +252,3 @@ export async function getEmailAccountForTelegramUser(
   );
   return getUserEmailAccount(user.id);
 }
-
-

@@ -2,6 +2,8 @@ import { chromium, type Page } from "playwright-chromium";
 import { env } from "../../config/env.js";
 import { hasUserProfile, getUserProfileDir } from "./session.js";
 import type { ScrapedFormQuestion } from "./types.js";
+import { getFormFieldsCache, saveFormFieldsCache } from "../../data/db.js";
+import { extractGoogleFormId } from "../../bot/utils.js";
 
 /**
  * Scrape all questions from a Google Form (handles multi-page forms).
@@ -18,6 +20,16 @@ export async function scrapeGoogleForm(
 }> {
   let browser: any;
   let persistentContext: any;
+  const formId = extractGoogleFormId(url);
+  
+  if (formId) {
+    const cached = await getFormFieldsCache(formId);
+    if (cached) {
+      console.log(`[Form Cache] Hit for scraped fields | ID: ${formId}`);
+      return { success: true, questions: cached.questions, formTitle: cached.formTitle };
+    }
+  }
+
   try {
     let page: Page;
 
@@ -179,11 +191,15 @@ export async function scrapeGoogleForm(
       await scrapeCurrentPage();
     }
 
-    return {
+    const result = {
       success: true,
       questions: allQuestions,
       formTitle: formTitle.trim(),
     };
+    if (formId) {
+      await saveFormFieldsCache(formId, { questions: allQuestions, formTitle: formTitle.trim() });
+    }
+    return result;
   } catch (error: any) {
     return { success: false, error: error.message };
   } finally {

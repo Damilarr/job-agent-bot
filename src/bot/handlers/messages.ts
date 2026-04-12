@@ -112,7 +112,7 @@ bot.on("message:document", async (ctx) => {
 
   {
     const { user } = await getOrCreateUserAndProfileForTelegram(telegramChatId);
-    logUserEvent(user.id, "resume_uploaded", path.basename(localPath));
+    await logUserEvent(user.id, "resume_uploaded", path.basename(localPath));
   }
 
   await ctx.reply(
@@ -166,7 +166,7 @@ bot.on("message:text", async (ctx) => {
     {
       const { user } =
         await getOrCreateUserAndProfileForTelegram(telegramChatId);
-      logUserEvent(user.id, "email_connected", emailAddress);
+      await logUserEvent(user.id, "email_connected", emailAddress);
     }
 
     await ctx.reply(
@@ -190,7 +190,7 @@ bot.on("message:text", async (ctx) => {
     {
       const { user } =
         await getOrCreateUserAndProfileForTelegram(telegramChatId);
-      logUserEvent(user.id, "profile_updated");
+      await logUserEvent(user.id, "profile_updated");
     }
     await ctx.reply(
       "✅ Profile updated! I’ll use this new information for future match scores, emails and cover letters.",
@@ -243,7 +243,7 @@ bot.on("message:text", async (ctx) => {
       {
         const { user } =
           await getOrCreateUserAndProfileForTelegram(telegramChatId);
-        logUserEvent(user.id, "link_updated", `${kind}: ${url}`);
+        await logUserEvent(user.id, "link_updated", `${kind}: ${url}`);
       }
       await ctx.reply(`✅ ${labelPretty} URL updated.`);
     } else if (kind === "custom" && ctx.session.currentActionId) {
@@ -262,7 +262,7 @@ bot.on("message:text", async (ctx) => {
         {
           const { user } =
             await getOrCreateUserAndProfileForTelegram(telegramChatId);
-          logUserEvent(user.id, "link_added", `${label}: ${url}`);
+          await logUserEvent(user.id, "link_added", `${label}: ${url}`);
         }
         await ctx.reply(`✅ Custom link "${label}" saved.`);
       }
@@ -482,6 +482,8 @@ bot.on("message:text", async (ctx) => {
           roleTitle: role,
           hasResume: !!resumePath,
           hasCoverLetter: false,
+          telegramUserId: telegramUserIdLocal,
+          formUrl: googleFormUrl,
         },
       );
 
