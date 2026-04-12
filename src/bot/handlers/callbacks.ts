@@ -10,15 +10,19 @@ import {
 import {
     getEmailAccountForTelegramUser,
     getLatestResumePathForTelegramUser,
-    getOrCreateUserAndProfileForTelegram
+    getLinksForTelegramUser,
+    getOrCreateUserAndProfileForTelegram,
+    getProfileTextForUserByTelegramChat,
+    resolveApplicantDisplayNameForForms
 } from "../../data/profile.js";
 import { sendApplicationEmailForUser } from "../../integrations/email.js";
 import {
-    autoFillGoogleForm,
     fillGoogleFormFromPlan,
+    generateFormAnswerPlan,
     getUserProfileDir,
     isGoogleSessionValid,
-    launchGoogleSignIn
+    launchGoogleSignIn,
+    scrapeGoogleForm
 } from "../../integrations/googleForms/index.js";
 import type { DraftContext, DraftTone } from "../../services/drafter.js";
 import { generateEmailDraft } from "../../services/drafter.js";
@@ -34,6 +38,9 @@ import {
 import {
     buildGoogleFormFillContext,
     escapeHtml,
+    extractGoogleFormId,
+    formatPlanPreview,
+    resolveResumePathForUser,
     startSetEmail,
     startSetLinks,
     startSetProfile, startSetResume
@@ -95,7 +102,7 @@ bot.callbackQuery("back_to_apps", async (ctx) => {
   let msg = "<b>📋 Your Applications</b>\n\n";
   for (const app of apps) {
     const emoji = statusEmoji[app.status] || "📨";
-    const date = app.created_at.slice(0, 10);
+    const date = app.created_at instanceof Date ? app.created_at.toISOString().slice(0, 10) : String(app.created_at).slice(0, 10);
     const score = app.match_score != null ? ` (${app.match_score}%)` : "";
     msg += `${emoji} <b>#${app.id}</b> ${escapeHtml(app.role)} @ ${escapeHtml(app.company)}${score}\n`;
     msg += `   ${app.method} · ${app.status} · ${date}\n`;
@@ -465,138 +472,89 @@ bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
 
   const role = pending.roles[idx] || pending.roles[0] || "This role";
   const from = ctx.from;
+  const telegramUserId = from.id;
 
   await ctx.editMessageText(
-    "🧾 Preparing profile, resume, cover letter (if needed), and opening the form…",
+    "🔍 Scraping form and generating AI answers...",
   );
 
-  const { fillCtx, resumePath, coverLetterPath } =
-    await buildGoogleFormFillContext(
-      pending,
-      from.id,
+  try {
+    const scrapeResult = await scrapeGoogleForm(pending.googleFormUrl, telegramUserId);
+
+    if (!scrapeResult.success || !scrapeResult.questions) {
+      await ctx.editMessageText(`❌ Could not read the form: ${scrapeResult.error || "Unknown error"}`);
+      if (token) pendingMultiRole.delete(token);
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    const tgName = from.first_name || from.last_name
+      ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
+      : undefined;
+
+    const userProfileText = await getProfileTextForUserByTelegramChat(telegramUserId, tgName, from.username || undefined);
+    const emailAccount = await getEmailAccountForTelegramUser(telegramUserId, tgName, from.username || undefined);
+    const links = await getLinksForTelegramUser(telegramUserId, tgName, from.username || undefined);
+    const applicantName = await resolveApplicantDisplayNameForForms(telegramUserId, {
+      ...(tgName !== undefined ? { name: tgName } : {}),
+      ...(from.first_name !== undefined ? { telegramFirstName: from.first_name } : {}),
+      ...(from.last_name !== undefined ? { telegramLastName: from.last_name } : {}),
+      ...(from.username !== undefined ? { username: from.username } : {}),
+    });
+
+    const resumePath = await resolveResumePathForUser(telegramUserId, from);
+    const github = links.find((l) => l.label === "github")?.url;
+    const linkedin = links.find((l) => l.label === "linkedin")?.url;
+    const portfolio = links.find((l) => l.label === "portfolio")?.url;
+
+    const plan = await generateFormAnswerPlan(
+      scrapeResult.questions,
+      userProfileText,
+      pending.rawJD,
+      scrapeResult.formTitle || "Google Form",
       {
-        ...(from.first_name !== undefined
-          ? { first_name: from.first_name }
-          : {}),
-        ...(from.last_name !== undefined ? { last_name: from.last_name } : {}),
-        ...(from.username !== undefined ? { username: from.username } : {}),
+        applicantName,
+        applicantEmail: emailAccount?.email_address,
+        githubUrl: github,
+        linkedinUrl: linkedin,
+        portfolioUrl: portfolio,
+        roleTitle: role,
+        hasResume: !!resumePath,
+        hasCoverLetter: false,
+        telegramUserId,
+        formUrl: pending.googleFormUrl,
       },
-      role,
-      { reuseCachedAttachments: false },
     );
 
-  if (token) {
-    pendingMultiRole.set(token, {
-      ...pending,
-      formAttachmentPaths: {
-        ...(resumePath !== undefined ? { resumePath } : {}),
-        ...(coverLetterPath !== undefined ? { coverLetterPath } : {}),
-      },
+    pendingFormReviews.set(telegramUserId, {
+      googleFormUrl: pending.googleFormUrl,
+      plan,
+      questions: scrapeResult.questions,
+      rawJD: pending.rawJD,
+      userProfileText,
+      resumePath,
+      telegramUserId,
     });
-  }
 
-  const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
-    submit: false,
-    telegramUserId: from.id,
-  });
-
-  if (result.success) {
-    const fields = result.filledFields ?? [];
-    const filledSummary =
-      fields.length > 0
-        ? fields
-            .map(
-              (f: any) =>
-                `• <b>${escapeHtml(f.label)}</b>\n  → ${escapeHtml(f.value)}`,
-            )
-            .join("\n")
-        : "";
-
-    const hintEmpty =
-      fields.length === 0
-        ? "\n\n<i>No questions on this form were matched to your profile.</i> Open the form, complete missing items manually, or update <code>/set_profile</code> (include a <code>Name:</code> line) and <code>/set_resume</code>."
-        : "";
+    if (token) pendingMultiRole.delete(token);
 
     const keyboard = new InlineKeyboard()
-      .text("✅ Submit now", `submitform_${token}_${idx}`)
-      .text("❌ Cancel", `pickrole_cancel_${token}`);
-    await ctx.editMessageText(
-      `✅ ${escapeHtml(result.message)}\n\n<b>Form fields we filled</b>\n${
-        filledSummary || "<i>(none)</i>"
-      }${hintEmpty}\n\nIf everything looks correct, you can submit now.`,
-      { parse_mode: "HTML", reply_markup: keyboard },
-    );
-  } else {
+      .text("✅ Confirm & Submit", "formreview_confirm")
+      .row()
+      .text("✏️ Revise", "formreview_revise")
+      .text("❌ Cancel", "formreview_cancel");
+
+    await ctx.editMessageText(formatPlanPreview(plan), {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+  } catch (error: any) {
     if (token) pendingMultiRole.delete(token);
-    await ctx.editMessageText(`❌ ${result.message}`);
+    await ctx.editMessageText(`❌ Error: ${error.message}`);
   }
   await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery(/^submitform_(.+)_(\d+)$/, async (ctx) => {
-  if (!ctx.from) {
-    await ctx.answerCallbackQuery({
-      text: "Missing user info.",
-      show_alert: true,
-    });
-    return;
-  }
-  const token = ctx.match[1];
-  const idx = parseInt(ctx.match[2] || "0", 10);
-  const pending = token ? pendingMultiRole.get(token) : null;
-  if (!pending || !pending.googleFormUrl) {
-    console.warn(
-      `submitform: token=${token} found=${!!pending} mapSize=${pendingMultiRole.size}`,
-    );
-    await ctx.answerCallbackQuery({
-      text: "Session expired — the bot may have restarted. Please paste the JD again.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  const role = pending.roles[idx] || pending.roles[0] || "This role";
-  const from = ctx.from;
-
-  await ctx.editMessageText("✅ Submitting the Google Form now...");
-
-  const { fillCtx } = await buildGoogleFormFillContext(
-    pending,
-    from.id,
-    {
-      ...(from.first_name !== undefined ? { first_name: from.first_name } : {}),
-      ...(from.last_name !== undefined ? { last_name: from.last_name } : {}),
-      ...(from.username !== undefined ? { username: from.username } : {}),
-    },
-    role,
-    { reuseCachedAttachments: true },
-  );
-
-  const result = await autoFillGoogleForm(pending.googleFormUrl, fillCtx, {
-    submit: true,
-    telegramUserId: from.id,
-  });
-
-  if (result.success) {
-    const { user } = await getOrCreateUserAndProfileForTelegram(from.id);
-    await addUserApplication({
-            userId: user.id,
-            company: "Unknown",
-            role,
-            method: "google_form",
-            destination: pending.googleFormUrl ?? undefined,
-          });
-  }
-
-  if (token) pendingMultiRole.delete(token);
-
-  await ctx.editMessageText(
-    result.success
-      ? `✅ ${result.message}\n\nTracked in /my_applications.`
-      : `❌ ${result.message}`,
-  );
-  await ctx.answerCallbackQuery();
-});
 
 // Handle "View sample profile" button
 bot.callbackQuery("view_sample_profile", async (ctx) => {
