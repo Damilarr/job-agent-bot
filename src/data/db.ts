@@ -1,6 +1,3 @@
-import dns from 'dns';
-dns.setDefaultResultOrder('ipv4first');
-
 import { PrismaClient } from '@prisma/client';
 import type { users, user_profiles, user_assets, user_links, user_email_accounts } from '@prisma/client';
 import crypto from 'crypto';
@@ -11,16 +8,15 @@ export type DBUserAsset = user_assets;
 export type DBUserLink = user_links;
 export type DBUserEmailAccount = user_email_accounts;
 
-import { Pool } from 'pg';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { neonConfig } from '@neondatabase/serverless';
+import { PrismaNeon } from '@prisma/adapter-neon';
+import ws from 'ws';
 
-const connectionString = process.env.DATABASE_URL!;
-const pool = new Pool({
-  connectionString,
-  connectionTimeoutMillis: 10000,
-  ssl: { rejectUnauthorized: false }
-});
-const adapter = new PrismaPg(pool);
+// Required for @neondatabase/serverless in Node.js (non-edge) environments
+neonConfig.webSocketConstructor = ws;
+
+// PrismaNeon takes a PoolConfig, not a Pool instance
+const adapter = new PrismaNeon({ connectionString: process.env.DATABASE_URL });
 
 export const prisma = new PrismaClient({ adapter });
 
