@@ -1,5 +1,6 @@
-import dns from 'dns';
-dns.setDefaultResultOrder('ipv4first'); 
+
+import { Agent, setGlobalDispatcher } from 'undici';
+setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
 
 import { PrismaClient } from '@prisma/client';
 import type { users, user_profiles, user_assets, user_links, user_email_accounts } from '@prisma/client';
