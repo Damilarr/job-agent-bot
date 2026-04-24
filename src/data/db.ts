@@ -8,15 +8,14 @@ export type DBUserAsset = user_assets;
 export type DBUserLink = user_links;
 export type DBUserEmailAccount = user_email_accounts;
 
-import { neonConfig } from '@neondatabase/serverless';
-import { PrismaNeon } from '@prisma/adapter-neon';
-import ws from 'ws';
+import { PrismaNeonHttp } from '@prisma/adapter-neon';
 
-// Required for @neondatabase/serverless in Node.js (non-edge) environments
-neonConfig.webSocketConstructor = ws;
-
-// PrismaNeon takes a PoolConfig, not a Pool instance
-const adapter = new PrismaNeon({ connectionString: process.env.DATABASE_URL });
+// PrismaNeonHttp uses HTTPS REST calls instead of WebSocket —
+// avoids WSS connection issues on restricted VM networks
+const adapter = new PrismaNeonHttp(process.env.DATABASE_URL!, {
+  arrayMode: false,
+  fullResults: false
+});
 
 export const prisma = new PrismaClient({ adapter });
 

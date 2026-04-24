@@ -5,9 +5,7 @@
  */
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
-import { neonConfig } from '@neondatabase/serverless';
-import { PrismaNeon } from '@prisma/adapter-neon';
-import ws from 'ws';
+import { PrismaNeonHttp } from '@prisma/adapter-neon';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -17,8 +15,7 @@ if (!url) {
 
 console.log(`🔌 Connecting to: ${url.replace(/:([^:@]+)@/, ':****@')}`);
 
-neonConfig.webSocketConstructor = ws;
-const adapter = new PrismaNeon({ connectionString: url });
+const adapter = new PrismaNeonHttp(url, { arrayMode: false, fullResults: false });
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
