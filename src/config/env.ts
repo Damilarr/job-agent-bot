@@ -11,6 +11,9 @@ const envSchema = z.object({
   HEADLESS: z
     .preprocess((val) => val === "true" || val === true, z.boolean())
     .default(true),
+  FORCE_IPV4: z
+    .preprocess((val) => val === "true" || val === true, z.boolean())
+    .default(false),
 });
 const parsedEnv = envSchema.safeParse(process.env);
 

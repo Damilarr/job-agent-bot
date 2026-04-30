@@ -9,14 +9,10 @@ import {
     getProfileTextForUserByTelegramChat,
     resolveApplicantDisplayNameForForms
 } from "../data/profile.js";
-import {
-    type FormAnswerPlan,
-    type GoogleFormFillContext
-} from "../integrations/googleForms/index.js";
 import { generateCoverLetterPDF } from "../services/coverLetter.js";
 import type { ParsedJobDescription } from "../services/parser.js";
 import { parseJobDescription } from "../services/parser.js";
-import type { MyContext, PendingGoogleFormSession } from "./types.js";
+import type { MyContext } from "./types.js";
 
 /** Heuristic: does this message look like a job description (so we don't run the parser on "nice", "thanks", etc.)? */
 function looksLikeJobDescription(text: string): boolean {
@@ -50,15 +46,7 @@ function looksLikeJobDescription(text: string): boolean {
   return hasKeyword || hasMultipleLines || trimmed.length >= 200;
 }
 
-function extractGoogleFormUrl(text: string): string | null {
-  const m = text.match(/https?:\/\/docs\.google\.com\/forms\/[^\s)]+/i);
-  return m ? m[0] : null;
-}
 
-function extractGoogleFormId(url: string): string | null {
-  const m = url.match(/\/forms\/d\/(?:e\/)?([a-zA-Z0-9_-]+)/i);
-  return m ? (m[1] || null) : null;
-}
 
 function extractRoles(text: string): string[] {
   const lines = text
@@ -165,127 +153,7 @@ async function resolveResumePathForUser(
   return undefined;
 }
 
-/** Generates a cover letter PDF when the JD asks for one (or mentions cover letter). */
-async function maybeGenerateCoverLetterForGoogleForm(
-  rawJD: string,
-  roleTitle: string,
-  cvText: string,
-): Promise<string | undefined> {
-  let jobData: ParsedJobDescription;
-  try {
-    jobData = await parseJobDescription(rawJD);
-  } catch {
-    return undefined;
-  }
-  const wantsCover =
-    jobData.requiresCoverLetter ||
-    /cover\s*letter|covering\s*letter|cv\s+and\s+cover|resume\s+and\s+cover/i.test(
-      rawJD,
-    );
-  if (!wantsCover) return undefined;
-  const safe = (jobData.jobTitle || roleTitle || "Application").replace(
-    /[^a-zA-Z0-9]/g,
-    "_",
-  );
-  const out = path.join(tmpdir(), `cl_gform_${safe}_${Date.now()}.pdf`);
-  return generateCoverLetterPDF(jobData, cvText, out);
-}
 
-async function buildGoogleFormFillContext(
-  pending: PendingGoogleFormSession,
-  telegramChatId: number,
-  from: { first_name?: string; last_name?: string; username?: string },
-  role: string,
-  opts: { reuseCachedAttachments: boolean },
-): Promise<{
-  fillCtx: GoogleFormFillContext;
-  applicantDisplayName: string | undefined;
-  resumePath: string | undefined;
-  coverLetterPath: string | undefined;
-}> {
-  const tgName =
-    from.first_name || from.last_name
-      ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
-      : undefined;
-
-  const cvText = await getProfileTextForUserByTelegramChat(
-    telegramChatId,
-    tgName,
-    from.username,
-  );
-
-  const applicantDisplayName = await resolveApplicantDisplayNameForForms(
-    telegramChatId,
-    {
-      ...(tgName !== undefined ? { name: tgName } : {}),
-      ...(from.first_name !== undefined
-        ? { telegramFirstName: from.first_name }
-        : {}),
-      ...(from.last_name !== undefined
-        ? { telegramLastName: from.last_name }
-        : {}),
-      ...(from.username !== undefined ? { username: from.username } : {}),
-    },
-  );
-
-  const emailAccount = await getEmailAccountForTelegramUser(
-    telegramChatId,
-    tgName,
-    from.username,
-  );
-
-  const links = await getLinksForTelegramUser(
-    telegramChatId,
-    tgName,
-    from.username,
-  );
-  const github = links.find((l) => l.label === "github")?.url;
-  const linkedin = links.find((l) => l.label === "linkedin")?.url;
-  const portfolio = links.find((l) => l.label === "portfolio")?.url;
-
-  let resumePath: string | undefined;
-  let coverLetterPath: string | undefined;
-
-  if (opts.reuseCachedAttachments && pending.formAttachmentPaths) {
-    const r = pending.formAttachmentPaths.resumePath;
-    const c = pending.formAttachmentPaths.coverLetterPath;
-    if (r && fs.existsSync(r)) resumePath = r;
-    if (c && fs.existsSync(c)) coverLetterPath = c;
-  }
-
-  if (!resumePath) {
-    resumePath = await resolveResumePathForUser(telegramChatId, from);
-  }
-  if (!coverLetterPath) {
-    coverLetterPath = await maybeGenerateCoverLetterForGoogleForm(
-      pending.rawJD,
-      role,
-      cvText,
-    );
-  }
-
-  const fillCtx: GoogleFormFillContext = {
-    ...(role ? { roleTitle: role } : {}),
-    ...(applicantDisplayName ? { applicantName: applicantDisplayName } : {}),
-    ...(emailAccount?.email_address
-      ? { applicantEmail: emailAccount.email_address }
-      : {}),
-    ...(pending.referrerName ? { referrerName: pending.referrerName } : {}),
-    ...(pending.referrerEmail ? { referrerEmail: pending.referrerEmail } : {}),
-    ...(github ? { githubUrl: github } : {}),
-    ...(linkedin ? { linkedinUrl: linkedin } : {}),
-    ...(portfolio ? { portfolioUrl: portfolio } : {}),
-    ...(resumePath ? { resumePath } : {}),
-    ...(coverLetterPath ? { coverLetterPath } : {}),
-  };
-
-  return {
-    fillCtx,
-    applicantDisplayName,
-    resumePath,
-    coverLetterPath,
-  };
-}
 async function startSetProfile(ctx: MyContext) {
   if (!ctx.from) return;
 
@@ -374,30 +242,4 @@ async function startSetEmail(ctx: MyContext) {
   );
 }
 
-function formatPlanPreview(plan: FormAnswerPlan): string {
-  let msg = `📋 <b>${escapeHtml(plan.formTitle)}</b>\n\n`;
-  msg += `<b>Here's what I'll fill in:</b>\n\n`;
-
-  for (const a of plan.answers) {
-    const reqTag = a.type === "file" ? "📎" : "";
-    const answerDisplay = a.fileKind && a.fileKind !== "none"
-      ? `[${a.fileKind === "resume" ? "📄 Resume file" : "📄 Cover letter file"}]`
-      : escapeHtml(a.answer || "(empty)");
-
-    const truncated = answerDisplay.length > 2000
-      ? answerDisplay.slice(0, 1997) + "..."
-      : answerDisplay;
-
-    msg += `<b>Q${a.index + 1}:</b> ${escapeHtml(a.label)}\n`;
-    msg += `${reqTag} → ${truncated}\n\n`;
-  }
-
-  msg += `\n<i>Review the answers above. You can:</i>\n`;
-  msg += `• ✅ <b>Confirm</b> to submit\n`;
-  msg += `• ✏️ <b>Revise</b> to request changes\n`;
-  msg += `• ❌ <b>Cancel</b> to abort`;
-
-  return msg;
-}
-
-export { buildGoogleFormFillContext, escapeHtml, extractGoogleFormId, extractGoogleFormUrl, extractReferrerDetails, extractRoles, formatPlanPreview, looksLikeJobDescription, maybeGenerateCoverLetterForGoogleForm, resolveResumePathForUser, startSetEmail, startSetLinks, startSetProfile, startSetResume };
+export { escapeHtml, extractReferrerDetails, extractRoles, looksLikeJobDescription, resolveResumePathForUser, startSetEmail, startSetLinks, startSetProfile, startSetResume };

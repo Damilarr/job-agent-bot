@@ -14,18 +14,7 @@ import {
     getLinksForTelegramUser,
     getOrCreateUserAndProfileForTelegram
 } from "../../data/profile.js";
-import {
-    clearGoogleSessionMarker,
-    getUserProfileDir,
-    isGoogleSessionValid,
-    launchGoogleSignIn,
-    markGoogleSessionValid,
-    verifyGoogleSessionViaBrowser
-} from "../../integrations/googleForms/index.js";
 import { bot, refreshBotMenu } from "../botInstance.js";
-import {
-    activeSignInSessions
-} from "../state.js";
 import {
     escapeHtml,
     startSetEmail,
@@ -76,7 +65,6 @@ bot.command("start", async (ctx) => {
   );
 
   const hasLinks = links.length > 0;
-  const hasGoogle = await isGoogleSessionValid(ctx.from.id);
 
   let text = "👋 Welcome to your Job Application Agent.\n\n";
   text +=
@@ -84,9 +72,7 @@ bot.command("start", async (ctx) => {
   text += `${emailAccount ? "✅" : "⚠️"} Connect your email (/set_email)\n`;
   text += `${resumePath ? "✅" : "⚠️"} Upload your resume (/set_resume)\n`;
   text += `✅ Set your profile text (/set_profile)\n`;
-  text += `${hasLinks ? "✅" : "ℹ️"} (Optional) Set your links (/set_links)\n`;
-  text += `${hasGoogle ? "✅" : "ℹ️"} (Optional) Connect Google account (/connect_google)\n`;
-  text += `    ↳ Required for Google Forms that need sign-in\n\n`;
+  text += `${hasLinks ? "✅" : "ℹ️"} (Optional) Set your links (/set_links)\n\n`;
   text += "You can tap the buttons below to go through each step.";
 
   const keyboard = new InlineKeyboard()
@@ -96,9 +82,7 @@ bot.command("start", async (ctx) => {
     .row()
     .text("3️⃣ Set profile", "onboard_profile")
     .row()
-    .text(hasLinks ? "Edit links" : "4️⃣ Set links", "onboard_links")
-    .row()
-    .text(hasGoogle ? "✅ Google connected" : "5️⃣ Connect Google", "onboard_google");
+    .text(hasLinks ? "Edit links" : "4️⃣ Set links", "onboard_links");
 
   await ctx.reply(text, { reply_markup: keyboard });
 });
@@ -114,14 +98,11 @@ bot.command("my_status", async (ctx) => {
 
   const events = await getRecentUserEvents(user.id, 5);
 
-  const isGoogleConnected = await isGoogleSessionValid(telegramChatId);
-
   let msg = "🧾 <b>Your setup status</b>\n\n";
   msg += `${emailAccount ? "✅" : "⚠️"} Email connected\n`;
   msg += `${resumePath ? "✅" : "⚠️"} Resume uploaded\n`;
   msg += `✅ Profile text set (you can update with /set_profile)\n`;
-  msg += `${links.length ? "✅" : "ℹ️"} Links configured\n`;
-  msg += `${isGoogleConnected ? "✅" : "ℹ️"} Google account connected (/connect_google)\n\n`;
+  msg += `${links.length ? "✅" : "ℹ️"} Links configured\n\n`;
 
   if (events.length) {
     msg += "<b>Recent activity:</b>\n";
@@ -253,109 +234,7 @@ bot.command("set_email", async (ctx) => {
   await startSetEmail(ctx);
 });
 
-bot.command("connect_google", async (ctx) => {
-  if (!ctx.from) return;
-  const userId = ctx.from.id;
 
-  // Check if there's already an active sign-in session
-  if (activeSignInSessions.has(userId)) {
-    await ctx.reply(
-      "⚠️ You already have a sign-in session open. Please complete it first, then send /connect_google_done when you're signed in.",
-    );
-    return;
-  }
-
-  await ctx.reply(
-    "🔑 <b>Google Account Setup</b>\n\n" +
-      "I'm opening a Chrome window on the server. Please sign into your Google account there.\n\n" +
-      "Once you've signed in, send /connect_google_done to save your session.\n\n" +
-      "⏳ The browser will stay open for 5 minutes.",
-    { parse_mode: "HTML" },
-  );
-
-  try {
-    const session = await launchGoogleSignIn(userId);
-    activeSignInSessions.set(userId, session);
-
-    // Auto-close after 5 minutes if user doesn't confirm
-    setTimeout(async () => {
-      if (activeSignInSessions.has(userId)) {
-        try {
-          await activeSignInSessions.get(userId)!.close();
-        } catch { /* ignore */ }
-        activeSignInSessions.delete(userId);
-
-        // Clean up the profile directory if sign-in was never completed
-        if (!(await isGoogleSessionValid(userId))) {
-          const profileDir = getUserProfileDir(userId);
-          if (fs.existsSync(profileDir)) {
-            fs.rmSync(profileDir, { recursive: true, force: true });
-          }
-        }
-
-        await ctx.reply(
-          "⏰ Google sign-in session timed out. Run /connect_google to try again.",
-        );
-      }
-    }, 5 * 60 * 1000);
-  } catch (error: any) {
-    await ctx.reply(`❌ Failed to open browser: ${error.message}`);
-  }
-});
-
-bot.command("connect_google_done", async (ctx) => {
-  if (!ctx.from) return;
-  const userId = ctx.from.id;
-
-  const session = activeSignInSessions.get(userId);
-  if (!session) {
-    if (await isGoogleSessionValid(userId)) {
-      await ctx.reply("✅ You already have a Google account connected! Your session is saved.");
-    } else {
-      
-      const profileDir = getUserProfileDir(userId);
-      if (fs.existsSync(profileDir)) {
-        fs.rmSync(profileDir, { recursive: true, force: true });
-      }
-      await ctx.reply("No active sign-in session. Run /connect_google first.");
-    }
-    return;
-  }
-
-  try {
-    await ctx.reply("🔍 Verifying your Google sign-in...");
-
-    await session.close();
-    activeSignInSessions.delete(userId);
-
-    // Give Chromium a moment to flush session data to disk
-    await new Promise((r) => setTimeout(r, 1500));
-    const isValid = await verifyGoogleSessionViaBrowser(userId);
-
-    if (isValid) {
-      markGoogleSessionValid(userId);
-      await ctx.reply(
-        "✅ <b>Google account connected!</b>\n\n" +
-          "Your session has been saved. I'll now be able to fill out Google Forms that require sign-in.\n\n" +
-          "If your session expires later, just run /connect_google again.",
-        { parse_mode: "HTML" },
-      );
-    } else {
-      // Sign-in wasn't completed — clean up the profile directory
-      clearGoogleSessionMarker(userId);
-      const profileDir = getUserProfileDir(userId);
-      if (fs.existsSync(profileDir)) {
-        fs.rmSync(profileDir, { recursive: true, force: true });
-      }
-      await ctx.reply(
-        "⚠️ It looks like the Google sign-in wasn't completed. Please try /connect_google again and make sure you fully sign in before sending /connect_google_done.",
-      );
-    }
-  } catch (error: any) {
-    activeSignInSessions.delete(userId);
-    await ctx.reply(`⚠️ Error closing session: ${error.message}`);
-  }
-});
 bot.command("download_resume", async (ctx) => {
   if (!ctx.from) return;
   const resumePath = await getLatestResumePathForTelegramUser(ctx.from.id);

@@ -16,7 +16,6 @@ bot.use(
       awaitingCustomLinkLabel: false,
       awaitingEmailAddress: false,
       awaitingEmailPassword: false,
-      awaitingFormRevision: false,
     }),
   }),
 );
@@ -51,14 +50,6 @@ export const BOT_MENU_COMMANDS = [
     command: "my_status",
     description: "See your setup status and recent activity",
   },
-  {
-    command: "connect_google",
-    description: "Connect your Google account for form applications",
-  },
-  {
-    command: "connect_google_done",
-    description: "Confirm Google sign-in is complete",
-  },
 ];
 /** Call this to refresh the bot's command menu (e.g. from /start so clients see the latest list). */
 export async function refreshBotMenu() {
@@ -73,11 +64,10 @@ const BOT_DESCRIPTION =
   "I'm your AI-powered job application assistant! Send me a job description and I'll:\n\n" +
   "📊 Score how well you match\n" +
   "✍️ Draft a tailored application email\n" +
-  "📄 Generate a cover letter PDF\n" +
-  "📝 Auto-fill Google Form applications\n\n" +
+  "📄 Generate a cover letter PDF\n\n" +
   "Type /start to get set up!";
 
-const BOT_SHORT_DESCRIPTION = "AI job application assistant — match scoring, email drafting, cover letters & Google Form auto-fill.";
+const BOT_SHORT_DESCRIPTION = "AI job application assistant — match scoring, email drafting, & cover letters.";
 
 export async function setBotDescription() {
   try {

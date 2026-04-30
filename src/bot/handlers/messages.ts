@@ -19,11 +19,7 @@ import {
     updateProfileFromTextForTelegram,
     upsertEmailAccountForTelegramUser,
 } from "../../data/profile.js";
-import {
-    generateFormAnswerPlan,
-    reviseFormAnswerPlan,
-    scrapeGoogleForm
-} from "../../integrations/googleForms/index.js";
+
 import { generateCoverLetterPDF } from "../../services/coverLetter.js";
 import type { DraftContext, DraftTone, EmailDraft } from "../../services/drafter.js";
 import { generateEmailDraft, reviseEmailDraft } from "../../services/drafter.js";
@@ -32,15 +28,11 @@ import type { ParsedJobDescription } from "../../services/parser.js";
 import { parseJobDescription } from "../../services/parser.js";
 import { bot } from "../botInstance.js";
 import {
-    pendingEmails,
-    pendingFormReviews,
-    pendingMultiRole
+    pendingEmails
 } from "../state.js";
 import {
-    extractGoogleFormUrl,
     extractReferrerDetails,
     extractRoles,
-    formatPlanPreview,
     looksLikeJobDescription,
     resolveResumePathForUser
 } from "../utils.js";
@@ -273,46 +265,7 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
-  // Handle AI form revision input
-  if (ctx.session.awaitingFormRevision && ctx.from) {
-    const userId = ctx.from.id;
-    const review = pendingFormReviews.get(userId);
 
-    if (!review) {
-      await ctx.reply("❌ No pending form review. Please start over by sending a job description with a Google Form link.");
-      ctx.session.awaitingFormRevision = false;
-      return;
-    }
-
-    await ctx.reply("🔄 Revising answers based on your feedback...");
-
-    try {
-      const revisedPlan = await reviseFormAnswerPlan(
-        review.plan,
-        rawJD,
-        review.userProfileText,
-        review.rawJD,
-      );
-
-      review.plan = revisedPlan;
-      pendingFormReviews.set(userId, review);
-      ctx.session.awaitingFormRevision = false;
-
-      const keyboard = new InlineKeyboard()
-        .text("✅ Confirm & Submit", "formreview_confirm")
-        .row()
-        .text("✏️ Revise again", "formreview_revise")
-        .text("❌ Cancel", "formreview_cancel");
-
-      await ctx.reply(formatPlanPreview(revisedPlan), {
-        parse_mode: "HTML",
-        reply_markup: keyboard,
-      });
-    } catch (error: any) {
-      await ctx.reply(`❌ Revision failed: ${error.message}. Try again or cancel.`);
-    }
-    return;
-  }
 
   // Handle revision input
   if (ctx.session.awaitingRevision && ctx.session.currentActionId) {
@@ -413,131 +366,7 @@ bot.on("message:text", async (ctx) => {
   }
 
   const roles = extractRoles(rawJD);
-  const googleFormUrl = extractGoogleFormUrl(rawJD);
   const ref = extractReferrerDetails(rawJD);
-
-  if (googleFormUrl && roles.length <= 1) {
-    const role = roles[0] || "This role";
-    const from = ctx.from!;
-    const telegramUserIdLocal = from.id;
-
-    await ctx.reply("🔍 Opening the form and scanning questions...");
-
-    try {
-      // Step 1: Scrape the form
-      const scrapeResult = await scrapeGoogleForm(googleFormUrl, telegramUserIdLocal);
-
-      if (!scrapeResult.success || !scrapeResult.questions) {
-        await ctx.reply(`❌ Could not read the form: ${scrapeResult.error || "Unknown error"}`);
-        return;
-      }
-
-      if (scrapeResult.questions.length === 0) {
-        await ctx.reply("⚠️ No questions found on this form. It may be empty or in a format I can't parse.");
-        return;
-      }
-
-      await ctx.reply(`✅ Found ${scrapeResult.questions.length} question(s). Generating answers with AI...`);
-
-      // Step 2: Gather user profile context
-      const tgName = from.first_name || from.last_name
-        ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
-        : undefined;
-
-      const userProfileText = await getProfileTextForUserByTelegramChat(
-        telegramUserIdLocal, tgName, from.username || undefined,
-      );
-      const emailAccount = await getEmailAccountForTelegramUser(
-        telegramUserIdLocal, tgName, from.username || undefined,
-      );
-      const links = await getLinksForTelegramUser(
-        telegramUserIdLocal, tgName, from.username || undefined,
-      );
-      const applicantName = await resolveApplicantDisplayNameForForms(
-        telegramUserIdLocal, {
-          ...(tgName !== undefined ? { name: tgName } : {}),
-          ...(from.first_name !== undefined ? { telegramFirstName: from.first_name } : {}),
-          ...(from.last_name !== undefined ? { telegramLastName: from.last_name } : {}),
-          ...(from.username !== undefined ? { username: from.username } : {}),
-        },
-      );
-
-      const resumePath = await resolveResumePathForUser(telegramUserIdLocal, from);
-      const github = links.find((l) => l.label === "github")?.url;
-      const linkedin = links.find((l) => l.label === "linkedin")?.url;
-      const portfolio = links.find((l) => l.label === "portfolio")?.url;
-
-      // Step 3: Generate AI answer plan
-      const plan = await generateFormAnswerPlan(
-        scrapeResult.questions,
-        userProfileText,
-        rawJD,
-        scrapeResult.formTitle || "Google Form",
-        {
-          applicantName,
-          applicantEmail: emailAccount?.email_address,
-          githubUrl: github,
-          linkedinUrl: linkedin,
-          portfolioUrl: portfolio,
-          roleTitle: role,
-          hasResume: !!resumePath,
-          hasCoverLetter: false,
-          telegramUserId: telegramUserIdLocal,
-          formUrl: googleFormUrl,
-        },
-      );
-
-      // Step 4: Store pending review and show preview
-      pendingFormReviews.set(telegramUserIdLocal, {
-        googleFormUrl,
-        plan,
-        questions: scrapeResult.questions,
-        rawJD,
-        userProfileText,
-        resumePath,
-        telegramUserId: telegramUserIdLocal,
-      });
-
-      const keyboard = new InlineKeyboard()
-        .text("✅ Confirm & Submit", "formreview_confirm")
-        .row()
-        .text("✏️ Revise", "formreview_revise")
-        .text("❌ Cancel", "formreview_cancel");
-
-      await ctx.reply(formatPlanPreview(plan), {
-        parse_mode: "HTML",
-        reply_markup: keyboard,
-      });
-    } catch (error: any) {
-      await ctx.reply(`❌ Error processing form: ${error.message}`);
-    }
-    return;
-  }
-
-  if (roles.length > 1) {
-    const token = `roles_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    pendingMultiRole.set(token, {
-      rawJD,
-      roles,
-      googleFormUrl,
-      ...(ref.referrerName ? { referrerName: ref.referrerName } : {}),
-      ...(ref.referrerEmail ? { referrerEmail: ref.referrerEmail } : {}),
-    });
-
-    const keyboard = new InlineKeyboard();
-    roles.forEach((r, idx) => {
-      const label = r.length > 40 ? `${r.slice(0, 40)}…` : r;
-      keyboard.text(label, `pickrole_${token}_${idx}`).row();
-    });
-    keyboard.text("❌ Cancel", `pickrole_cancel_${token}`);
-
-    await ctx.reply(
-      `I found multiple roles in this post. Which one do you want to apply for?\n\n` +
-        roles.map((r, i) => `${i + 1}. ${r}`).join("\n"),
-      { reply_markup: keyboard },
-    );
-    return;
-  }
 
   const statusMsg = await ctx.reply("🔍 Analyzing the job description...");
 

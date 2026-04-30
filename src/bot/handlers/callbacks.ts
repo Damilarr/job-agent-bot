@@ -16,30 +16,17 @@ import {
     resolveApplicantDisplayNameForForms
 } from "../../data/profile.js";
 import { sendApplicationEmailForUser } from "../../integrations/email.js";
-import {
-    fillGoogleFormFromPlan,
-    generateFormAnswerPlan,
-    getUserProfileDir,
-    isGoogleSessionValid,
-    launchGoogleSignIn,
-    scrapeGoogleForm
-} from "../../integrations/googleForms/index.js";
+
 import type { DraftContext, DraftTone } from "../../services/drafter.js";
 import { generateEmailDraft } from "../../services/drafter.js";
 import { bot } from "../botInstance.js";
 import {
-    activeSignInSessions,
     pendingEmails,
-    pendingFormReviews,
-    pendingMultiRole,
     queueForUser,
     withGlobalLimit
 } from "../state.js";
 import {
-    buildGoogleFormFillContext,
     escapeHtml,
-    extractGoogleFormId,
-    formatPlanPreview,
     resolveResumePathForUser,
     startSetEmail,
     startSetLinks,
@@ -124,84 +111,7 @@ bot.callbackQuery("back_to_apps", async (ctx) => {
   });
   await ctx.answerCallbackQuery();
 });
-// Confirm: fill the form and submit
-bot.callbackQuery("formreview_confirm", async (ctx) => {
-  if (!ctx.from) return;
-  const userId = ctx.from.id;
-  const review = pendingFormReviews.get(userId);
 
-  if (!review) {
-    await ctx.answerCallbackQuery({ text: "No pending form review found." });
-    return;
-  }
-
-  await ctx.answerCallbackQuery();
-  await ctx.editMessageText("⏳ Filling and submitting the form...");
-
-  try {
-    const result = await fillGoogleFormFromPlan(
-      review.googleFormUrl,
-      review.plan,
-      { resumePath: review.resumePath ?? undefined, coverLetterPath: review.coverLetterPath ?? undefined },
-      { submit: true, telegramUserId: userId },
-    );
-
-    pendingFormReviews.delete(userId);
-
-    if (result.success) {
-      const { user } = await getOrCreateUserAndProfileForTelegram(userId);
-      await addUserApplication({
-                userId: user.id,
-                company: review.plan.formTitle || "Google Form",
-                role: review.plan.answers.find((a: any) => /role|position/i.test(a.label))?.answer || "Application",
-                method: "google_form",
-                destination: review.googleFormUrl,
-                matchScore: 0,
-              });
-
-      let msg = "✅ <b>Form submitted successfully!</b>\n\n";
-      if (result.filledFields && result.filledFields.length > 0) {
-        msg += `Filled ${result.filledFields.length} field(s).`;
-      }
-      await ctx.editMessageText(msg, { parse_mode: "HTML" });
-    } else {
-      await ctx.editMessageText(`❌ Failed to submit: ${result.message}`);
-    }
-  } catch (error: any) {
-    pendingFormReviews.delete(userId);
-    await ctx.editMessageText(`❌ Error: ${error.message}`);
-  }
-});
-
-// Revise: ask the user for instructions
-bot.callbackQuery("formreview_revise", async (ctx) => {
-  if (!ctx.from) return;
-  const userId = ctx.from.id;
-
-  if (!pendingFormReviews.has(userId)) {
-    await ctx.answerCallbackQuery({ text: "No pending form review found." });
-    return;
-  }
-
-  ctx.session.awaitingFormRevision = true;
-  await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "✏️ Tell me what changes you'd like. For example:\n\n" +
-      '• "Make Q3 more concise"\n' +
-      '• "Change Q1 to use my middle name: John A. Doe"\n' +
-      '• "For Q5, say I have 3 years of experience, not 5"\n\n' +
-      "Send your instructions and I'll update the plan.",
-  );
-});
-
-// Cancel: abort the form fill
-bot.callbackQuery("formreview_cancel", async (ctx) => {
-  if (!ctx.from) return;
-  pendingFormReviews.delete(ctx.from.id);
-  ctx.session.awaitingFormRevision = false;
-  await ctx.answerCallbackQuery();
-  await ctx.editMessageText("❌ Form fill cancelled.");
-});
 // Handle Edit button
 bot.callbackQuery(/^edit_(.+)$/, async (ctx) => {
   try {
@@ -348,212 +258,8 @@ bot.callbackQuery("onboard_links", async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
-bot.callbackQuery("onboard_google", async (ctx) => {
-  if (!ctx.from) return;
-  await ctx.answerCallbackQuery();
 
-  if (await isGoogleSessionValid(ctx.from.id)) {
-    await ctx.reply("✅ Your Google account is already connected! You're all set for Google Form applications.");
-    return;
-  }
 
-  // Trigger the same flow as /connect_google
-  const userId = ctx.from.id;
-
-  if (activeSignInSessions.has(userId)) {
-    await ctx.reply(
-      "⚠️ You already have a sign-in session open. Please complete it first, then send /connect_google_done.",
-    );
-    return;
-  }
-
-  await ctx.reply(
-    "🔑 <b>Google Account Setup</b>\n\n" +
-      "I'm opening a Chrome window. Please sign into your Google account there.\n\n" +
-      "Once you've signed in, send /connect_google_done to save your session.\n\n" +
-      "⏳ The browser will stay open for 5 minutes.",
-    { parse_mode: "HTML" },
-  );
-
-  try {
-    const session = await launchGoogleSignIn(userId);
-    activeSignInSessions.set(userId, session);
-
-    setTimeout(async () => {
-      if (activeSignInSessions.has(userId)) {
-        try { await activeSignInSessions.get(userId)!.close(); } catch { /* ignore */ }
-        activeSignInSessions.delete(userId);
-
-        // Clean up the profile directory if sign-in was never completed
-        if (!(await isGoogleSessionValid(userId))) {
-          const profileDir = getUserProfileDir(userId);
-          if (fs.existsSync(profileDir)) {
-            fs.rmSync(profileDir, { recursive: true, force: true });
-          }
-        }
-
-        await ctx.reply("⏰ Google sign-in session timed out. Run /connect_google to try again.");
-      }
-    }, 5 * 60 * 1000);
-  } catch (error: any) {
-    await ctx.reply(`❌ Failed to open browser: ${error.message}`);
-  }
-});
-
-// Multi-role selection callbacks
-bot.callbackQuery(/^pickrole_cancel_(.+)$/, async (ctx) => {
-  const token = ctx.match[1];
-  if (token) pendingMultiRole.delete(token);
-  await ctx.editMessageText("❌ Cancelled.");
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^pickrole_(.+)_(\d+)$/, async (ctx) => {
-  const token = ctx.match[1];
-  const idx = parseInt(ctx.match[2] || "0", 10);
-  const pending = token ? pendingMultiRole.get(token) : null;
-  if (!pending) {
-    await ctx.answerCallbackQuery({
-      text: "Session expired.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  const role = pending.roles[idx];
-  if (!role) {
-    await ctx.answerCallbackQuery({
-      text: "Invalid role selection.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  // If there's a Google Form link, route to form fill confirmation
-  if (pending.googleFormUrl) {
-    const keyboard = new InlineKeyboard()
-      .text("🧾 Fill Google Form (review)", `fillform_${token}_${idx}`)
-      .text("❌ Cancel", `pickrole_cancel_${token}`);
-
-    await ctx.editMessageText(
-      `Selected: **${role}**\n\nI found a Google Form application link. Do you want me to fill it now?`,
-      { parse_mode: "Markdown", reply_markup: keyboard },
-    );
-    await ctx.answerCallbackQuery();
-    return;
-  }
-
-  // No form link; continue with normal JD parsing by editing message and asking user to resend JD (simple path)
-  await ctx.editMessageText(
-    `Selected: **${role}**\n\nNow paste the JD again and I’ll draft the application for that role.`,
-    { parse_mode: "Markdown" },
-  );
-  await ctx.answerCallbackQuery();
-});
-
-bot.callbackQuery(/^fillform_(.+)_(\d+)$/, async (ctx) => {
-  if (!ctx.from) {
-    await ctx.answerCallbackQuery({
-      text: "Missing user info.",
-      show_alert: true,
-    });
-    return;
-  }
-  const token = ctx.match[1];
-  const idx = parseInt(ctx.match[2] || "0", 10);
-  const pending = token ? pendingMultiRole.get(token) : null;
-  if (!pending || !pending.googleFormUrl) {
-    await ctx.answerCallbackQuery({
-      text: "Session expired.",
-      show_alert: true,
-    });
-    return;
-  }
-
-  const role = pending.roles[idx] || pending.roles[0] || "This role";
-  const from = ctx.from;
-  const telegramUserId = from.id;
-
-  await ctx.editMessageText(
-    "🔍 Scraping form and generating AI answers...",
-  );
-
-  try {
-    const scrapeResult = await scrapeGoogleForm(pending.googleFormUrl, telegramUserId);
-
-    if (!scrapeResult.success || !scrapeResult.questions) {
-      await ctx.editMessageText(`❌ Could not read the form: ${scrapeResult.error || "Unknown error"}`);
-      if (token) pendingMultiRole.delete(token);
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    const tgName = from.first_name || from.last_name
-      ? `${from.first_name || ""} ${from.last_name || ""}`.trim()
-      : undefined;
-
-    const userProfileText = await getProfileTextForUserByTelegramChat(telegramUserId, tgName, from.username || undefined);
-    const emailAccount = await getEmailAccountForTelegramUser(telegramUserId, tgName, from.username || undefined);
-    const links = await getLinksForTelegramUser(telegramUserId, tgName, from.username || undefined);
-    const applicantName = await resolveApplicantDisplayNameForForms(telegramUserId, {
-      ...(tgName !== undefined ? { name: tgName } : {}),
-      ...(from.first_name !== undefined ? { telegramFirstName: from.first_name } : {}),
-      ...(from.last_name !== undefined ? { telegramLastName: from.last_name } : {}),
-      ...(from.username !== undefined ? { username: from.username } : {}),
-    });
-
-    const resumePath = await resolveResumePathForUser(telegramUserId, from);
-    const github = links.find((l) => l.label === "github")?.url;
-    const linkedin = links.find((l) => l.label === "linkedin")?.url;
-    const portfolio = links.find((l) => l.label === "portfolio")?.url;
-
-    const plan = await generateFormAnswerPlan(
-      scrapeResult.questions,
-      userProfileText,
-      pending.rawJD,
-      scrapeResult.formTitle || "Google Form",
-      {
-        applicantName,
-        applicantEmail: emailAccount?.email_address,
-        githubUrl: github,
-        linkedinUrl: linkedin,
-        portfolioUrl: portfolio,
-        roleTitle: role,
-        hasResume: !!resumePath,
-        hasCoverLetter: false,
-        telegramUserId,
-        formUrl: pending.googleFormUrl,
-      },
-    );
-
-    pendingFormReviews.set(telegramUserId, {
-      googleFormUrl: pending.googleFormUrl,
-      plan,
-      questions: scrapeResult.questions,
-      rawJD: pending.rawJD,
-      userProfileText,
-      resumePath,
-      telegramUserId,
-    });
-
-    if (token) pendingMultiRole.delete(token);
-
-    const keyboard = new InlineKeyboard()
-      .text("✅ Confirm & Submit", "formreview_confirm")
-      .row()
-      .text("✏️ Revise", "formreview_revise")
-      .text("❌ Cancel", "formreview_cancel");
-
-    await ctx.editMessageText(formatPlanPreview(plan), {
-      parse_mode: "HTML",
-      reply_markup: keyboard,
-    });
-  } catch (error: any) {
-    if (token) pendingMultiRole.delete(token);
-    await ctx.editMessageText(`❌ Error: ${error.message}`);
-  }
-  await ctx.answerCallbackQuery();
-});
 
 
 // Handle "View sample profile" button

@@ -1,6 +1,5 @@
 import type { DraftContext, DraftTone, EmailDraft } from "../services/drafter.js";
 import type { ParsedJobDescription } from "../services/parser.js";
-import type { PendingFormReview, PendingGoogleFormSession } from "./types.js";
 
 const GLOBAL_CONCURRENCY = 2;
 let globalActive = 0;
@@ -32,9 +31,6 @@ function queueForUser<T>(userId: number, fn: () => Promise<T>): Promise<T> {
   );
   return next;
 }
-const pendingMultiRole = new Map<string, PendingGoogleFormSession>();
-const pendingFormReviews = new Map<number, PendingFormReview>();
-
 const pendingEmails = new Map<
   string,
   {
@@ -49,6 +45,5 @@ const pendingEmails = new Map<
     tone?: DraftTone;
   }
 >();
-const activeSignInSessions = new Map<number, { close: () => Promise<void> }>();
 
-export { activeSignInSessions, globalActive, globalQueue, pendingEmails, pendingFormReviews, pendingMultiRole, queueForUser, userChains, withGlobalLimit };
+export { globalActive, globalQueue, pendingEmails, queueForUser, userChains, withGlobalLimit };
