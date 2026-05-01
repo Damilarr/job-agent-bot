@@ -17,11 +17,11 @@ export type DBUserEmailAccount = user_email_accounts;
 
 import { PrismaNeonHttp } from '@prisma/adapter-neon';
 
-// PrismaNeonHttp uses HTTPS REST calls instead of WebSocket —
-// avoids WSS connection issues on restricted VM networks
+
 const adapter = new PrismaNeonHttp(process.env.DATABASE_URL!, {
   arrayMode: false,
-  fullResults: false
+  fullResults: false,
+  ...(env.FORCE_IPV4 ? { fetchOptions: { dispatcher: new Agent({ connect: { family: 4 } }) } } : {})
 });
 
 export const prisma = new PrismaClient({ adapter });
