@@ -78,11 +78,21 @@ export async function hasJobBeenProcessed(jobId: string): Promise<boolean> {
 }
 
 export async function logProcessedJob(record: DBJobRecord): Promise<void> {
-  await prisma.processed_jobs.upsert({
+  const existing = await prisma.processed_jobs.findUnique({
     where: { id: record.id },
-    create: record,
-    update: record
+    select: { id: true }
   });
+
+  if (existing) {
+    await prisma.processed_jobs.update({
+      where: { id: record.id },
+      data: record
+    });
+  } else {
+    await prisma.processed_jobs.create({
+      data: record
+    });
+  }
 }
 
 export async function getTodaysProcessedJobs(): Promise<any[]> {
@@ -129,11 +139,21 @@ export async function upsertUserProfile(profile: any): Promise<void> {
     updated_at: new Date()
   };
 
-  await prisma.user_profiles.upsert({
+  const existing = await prisma.user_profiles.findUnique({
     where: { user_id: profile.user_id },
-    create: { user_id: profile.user_id, ...data },
-    update: data
+    select: { user_id: true }
   });
+
+  if (existing) {
+    await prisma.user_profiles.update({
+      where: { user_id: profile.user_id },
+      data
+    });
+  } else {
+    await prisma.user_profiles.create({
+      data: { user_id: profile.user_id, ...data }
+    });
+  }
 }
 
 export async function addUserAsset(userId: number, type: string, filePath: string): Promise<void> {
@@ -197,11 +217,21 @@ export async function upsertUserEmailAccount(account: any): Promise<void> {
     updated_at: new Date()
   };
 
-  await prisma.user_email_accounts.upsert({
+  const existing = await prisma.user_email_accounts.findUnique({
     where: { user_id: account.user_id },
-    create: { user_id: account.user_id, ...data },
-    update: data
+    select: { user_id: true }
   });
+
+  if (existing) {
+    await prisma.user_email_accounts.update({
+      where: { user_id: account.user_id },
+      data
+    });
+  } else {
+    await prisma.user_email_accounts.create({
+      data: { user_id: account.user_id, ...data }
+    });
+  }
 }
 
 export async function getUserEmailAccount(userId: number): Promise<any | null> {
@@ -274,11 +304,23 @@ export async function getUserApplicationById(applicationId: number, userId: numb
 }
 
 export async function saveAdminChatId(chatId: number): Promise<void> {
-  await prisma.settings.upsert({
-    where: { key: 'ADMIN_CHAT_ID' },
-    create: { key: 'ADMIN_CHAT_ID', value: chatId.toString() },
-    update: { value: chatId.toString() }
+  const key = 'ADMIN_CHAT_ID';
+  const value = chatId.toString();
+
+  const existing = await prisma.settings.findUnique({
+    where: { key }
   });
+
+  if (existing) {
+    await prisma.settings.update({
+      where: { key },
+      data: { value }
+    });
+  } else {
+    await prisma.settings.create({
+      data: { key, value }
+    });
+  }
 }
 
 export async function getAdminChatId(): Promise<string | null> {
@@ -294,11 +336,21 @@ export async function getFormFieldsCache(formId: string): Promise<any | null> {
 }
 
 export async function saveFormFieldsCache(formId: string, fields: any): Promise<void> {
-  await prisma.form_scraping_cache.upsert({
+  const existing = await prisma.form_scraping_cache.findUnique({
     where: { form_id: formId },
-    create: { form_id: formId, fields },
-    update: { fields }
+    select: { form_id: true }
   });
+
+  if (existing) {
+    await prisma.form_scraping_cache.update({
+      where: { form_id: formId },
+      data: { fields }
+    });
+  } else {
+    await prisma.form_scraping_cache.create({
+      data: { form_id: formId, fields }
+    });
+  }
 }
 
 export async function getUserFormPlanCache(userId: number, formId: string): Promise<any | null> {
@@ -309,9 +361,19 @@ export async function getUserFormPlanCache(userId: number, formId: string): Prom
 }
 
 export async function saveUserFormPlanCache(userId: number, formId: string, plan: any): Promise<void> {
-  await prisma.user_form_answers_cache.upsert({
+  const existing = await prisma.user_form_answers_cache.findUnique({
     where: { user_id_form_id: { user_id: userId, form_id: formId } },
-    create: { user_id: userId, form_id: formId, plan },
-    update: { plan, updated_at: new Date() }
+    select: { user_id: true }
   });
+
+  if (existing) {
+    await prisma.user_form_answers_cache.update({
+      where: { user_id_form_id: { user_id: userId, form_id: formId } },
+      data: { plan, updated_at: new Date() }
+    });
+  } else {
+    await prisma.user_form_answers_cache.create({
+      data: { user_id: userId, form_id: formId, plan }
+    });
+  }
 }
