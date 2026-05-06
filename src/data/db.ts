@@ -174,20 +174,27 @@ export async function getLatestUserAsset(userId: number, type: string): Promise<
 }
 
 export async function upsertUserProfileLinksFromCoreFields(profile: any): Promise<void> {
-  await prisma.user_links.deleteMany({
+  const existingLinks = await prisma.user_links.findMany({
     where: {
       user_id: profile.user_id,
       label: { in: ['github', 'linkedin', 'portfolio'] }
-    }
+    },
+    select: { id: true }
   });
+
+  for (const link of existingLinks) {
+    await prisma.user_links.delete({
+      where: { id: link.id }
+    });
+  }
 
   const linksToCreate = [];
   if (profile.github_url) linksToCreate.push({ user_id: profile.user_id, label: 'github', url: profile.github_url });
   if (profile.linkedin_url) linksToCreate.push({ user_id: profile.user_id, label: 'linkedin', url: profile.linkedin_url });
   if (profile.portfolio_url) linksToCreate.push({ user_id: profile.user_id, label: 'portfolio', url: profile.portfolio_url });
 
-  if (linksToCreate.length > 0) {
-    await prisma.user_links.createMany({ data: linksToCreate });
+  for (const link of linksToCreate) {
+    await prisma.user_links.create({ data: link });
   }
 }
 
@@ -286,10 +293,17 @@ export async function getUserApplications(userId: number, limit: number = 20): P
 
 export async function updateApplicationStatus(applicationId: number, userId: number, status: ApplicationStatus): Promise<boolean> {
   try {
-    await prisma.user_applications.updateMany({
+    const existingApps = await prisma.user_applications.findMany({
       where: { id: applicationId, user_id: userId },
-      data: { status, updated_at: new Date() }
+      select: { id: true }
     });
+    
+    for (const app of existingApps) {
+      await prisma.user_applications.update({
+        where: { id: app.id },
+        data: { status, updated_at: new Date() }
+      });
+    }
     return true;
   } catch (e) {
     return false;
