@@ -1,15 +1,19 @@
-import { aiService } from '../services/ai.js';
-import type { ParsedJobDescription } from './parser.js';
-import { mdToPdf } from 'md-to-pdf';
-import fs from 'fs';
-import path from 'path';
-
+import { aiService } from "../services/ai.js";
+import type { ParsedJobDescription } from "./parser.js";
+import {
+  markdownToHtml,
+  renderHtmlToPdf,
+  wrapCoverLetterHtml,
+} from "./pdf.js";
 
 /**
- * Generates a tailored Cover Letter in Markdown format using Gemini, carefully crafted to sound human
- * and tie back to the company values and the applicant's CV. Then converts it to a PDF file.
+ * Generates a tailored Cover Letter in Markdown format using Groq, then converts it to PDF.
  */
-export async function generateCoverLetterPDF(jobData: ParsedJobDescription, cvText: string, outputPath: string): Promise<string> {
+export async function generateCoverLetterPDF(
+  jobData: ParsedJobDescription,
+  cvText: string,
+  outputPath: string,
+): Promise<string> {
   const prompt = `
 You are an expert career strategist and you are writing a cover letter for me.
 My CV is below:
@@ -19,9 +23,9 @@ ${cvText}
 
 The job I am applying for is:
 Job Title: ${jobData.jobTitle}
-Company Name: ${jobData.companyName || 'the company'}
-Company Values / About Us: ${jobData.companyValues || 'Not specified'}
-Required Skills: ${jobData.keySkills.join(', ')}
+Company Name: ${jobData.companyName || "the company"}
+Company Values / About Us: ${jobData.companyValues || "Not specified"}
+Required Skills: ${jobData.keySkills.join(", ")}
 Required Experience: ${jobData.requiredExperience}
 
 WRITE A COVER LETTER matching my CV to this job.
@@ -38,10 +42,8 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
 
   const ai = aiService.getClient();
   const response = await ai.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'user', content: prompt }
-    ],
+    model: "llama-3.3-70b-versatile",
+    messages: [{ role: "user", content: prompt }],
   });
 
   const markdownContent = response.choices[0]?.message?.content;
@@ -49,24 +51,8 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
     throw new Error("Groq failed to generate cover letter markdown.");
   }
 
-  // Convert the Markdown to PDF
-  // We use md-to-pdf which utilizes Puppeteer under the hood to generate clean PDFs from Markdown
-  const pdfOutput = await mdToPdf(
-    { content: markdownContent }, 
-    { 
-      dest: outputPath,
-      pdf_options: { format: 'A4', margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' }, displayHeaderFooter: false },
-      css: `
-        body { font-family: 'Helvetica', 'Arial', sans-serif; font-size: 11pt; line-height: 1.6; color: #333; }
-        h1, h2, h3 { color: #222; margin-bottom: 10px; }
-        p { margin-bottom: 15px; }
-      `
-    }
-  );
-
-  if (pdfOutput) {
-     fs.writeFileSync(outputPath, pdfOutput.content);
-  }
+  const html = wrapCoverLetterHtml(markdownToHtml(markdownContent));
+  await renderHtmlToPdf(html, outputPath);
 
   return outputPath;
 }

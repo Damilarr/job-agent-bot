@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "npx --yes tsx index.ts",
+    "postinstall": "npx playwright install chromium",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -24,7 +25,6 @@
     "google-auth-library": "^9.15.1",
     "grammy": "^1.41.1",
     "groq-sdk": "^1.1.2",
-    "md-to-pdf": "^5.2.5",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
     "pg": "^8.20.0",

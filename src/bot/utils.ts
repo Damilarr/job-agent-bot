@@ -9,7 +9,6 @@ import {
     getProfileTextForUserByTelegramChat,
     resolveApplicantDisplayNameForForms
 } from "../data/profile.js";
-import { generateCoverLetterPDF } from "../services/coverLetter.js";
 import type { ParsedJobDescription } from "../services/parser.js";
 import { parseJobDescription } from "../services/parser.js";
 import type { MyContext } from "./types.js";

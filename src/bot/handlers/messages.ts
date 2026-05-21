@@ -1,5 +1,6 @@
 import fs from "fs";
 import { InlineKeyboard } from "grammy";
+import { tmpdir } from "os";
 import path from "path";
 import { env } from "../../config/env.js";
 import { myCV } from "../../data/cv.js";
@@ -459,13 +460,22 @@ bot.on("message:text", async (ctx) => {
 
     let coverLetterFilename: string | undefined;
     let coverLetterPath: string | undefined;
+    let coverLetterError: string | undefined;
     if (shouldGenerateCoverLetter) {
       coverLetterFilename = `Cover_Letter_${jobData.jobTitle.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
-      coverLetterPath = await generateCoverLetterPDF(
-        jobData,
-        cvText,
-        `./${coverLetterFilename}`,
-      );
+      const coverLetterOutPath = path.join(tmpdir(), coverLetterFilename);
+      try {
+        coverLetterPath = await generateCoverLetterPDF(
+          jobData,
+          cvText,
+          coverLetterOutPath,
+        );
+      } catch (coverErr: any) {
+        console.error("Cover letter PDF generation failed:", coverErr);
+        coverLetterError =
+          coverErr?.message ||
+          "PDF generation failed — email draft is still ready without it.";
+      }
     }
 
     // Save state in memory cache
@@ -534,6 +544,8 @@ bot.on("message:text", async (ctx) => {
 
       if (coverLetterFilename && coverLetterPath) {
         replyText += `- \`${coverLetterFilename}\`\n`;
+      } else if (coverLetterError) {
+        replyText += `⚠️ *Cover letter skipped:* ${coverLetterError}\n`;
       }
 
       keyboard.text("🚀 Send Email", `send_${actionId}`);
