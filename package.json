@@ -31,6 +31,7 @@
     "playwright-chromium": "^1.58.2",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "unpdf": "^1.8.1",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },

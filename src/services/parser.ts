@@ -1,4 +1,4 @@
-import { aiService, GROQ_MODEL } from '../services/ai.js';
+import { aiService } from '../services/ai.js';
 
 // Define the expected output structure using standard JSON schema format
 const responseSchema = {
@@ -79,9 +79,7 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
   `;
 
   try {
-    const ai = aiService.getClient();
-    const response = await ai.chat.completions.create({
-      model: GROQ_MODEL,
+    const response = await aiService.complete({
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(responseSchema, null, 2) }

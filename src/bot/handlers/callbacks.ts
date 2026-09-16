@@ -1,4 +1,3 @@
-import fs from "fs";
 import { InlineKeyboard } from "grammy";
 import {
     addUserApplication,
@@ -9,11 +8,7 @@ import {
 } from "../../data/db.js";
 import {
     getEmailAccountForTelegramUser,
-    getLatestResumePathForTelegramUser,
-    getLinksForTelegramUser,
-    getOrCreateUserAndProfileForTelegram,
-    getProfileTextForUserByTelegramChat,
-    resolveApplicantDisplayNameForForms
+    getOrCreateUserAndProfileForTelegram
 } from "../../data/profile.js";
 import { sendApplicationEmailForUser } from "../../integrations/email.js";
 
@@ -21,13 +16,18 @@ import type { DraftContext, DraftTone } from "../../services/drafter.js";
 import { generateEmailDraft } from "../../services/drafter.js";
 import { bot } from "../botInstance.js";
 import {
+    composePendingEmailBody,
+    getEmailAttachments,
+    renderDraftPreview,
+    resumeAttachmentName,
+} from "../pendingEmail.js";
+import {
     pendingEmails,
     queueForUser,
     withGlobalLimit
 } from "../state.js";
 import {
     escapeHtml,
-    resolveResumePathForUser,
     startSetEmail,
     startSetLinks,
     startSetProfile, startSetResume
@@ -167,38 +167,17 @@ bot.callbackQuery(/^tone_(confident|formal|friendly)_(.+)$/, async (ctx) => {
 
     const newDraft = await generateEmailDraft(
       pending.jobData,
-      pending.cvText ?? "",
-      pending.match?.feedback,
+      pending.cvText,
       toneCtx,
     );
 
     pending.draft = newDraft;
     pending.tone = tone;
 
-    const toneLabel: Record<DraftTone, string> = {
-      confident: "💪 Confident",
-      formal: "🎩 Formal",
-      friendly: "😊 Friendly",
-    };
-
-    let replyText = `**Email Draft** (${toneLabel[tone]})\n`;
-    replyText += `*Subject:* ${newDraft.subject}\n`;
-    replyText += `*Body:*\n${newDraft.bodyText}`;
-
-    const keyboard = new InlineKeyboard();
-    keyboard.text("📝 Edit Draft", `edit_${actionId}`);
-    if (pending.jobData.applicationEmail) {
-      keyboard.text("🚀 Send Email", `send_${actionId}`);
-    }
-    keyboard.text("❌ Cancel", `cancel_${actionId}`);
-    keyboard.row();
-    keyboard.text("💪 Confident", `tone_confident_${actionId}`);
-    keyboard.text("🎩 Formal", `tone_formal_${actionId}`);
-    keyboard.text("😊 Friendly", `tone_friendly_${actionId}`);
-
-    await ctx.editMessageText(replyText, {
-      parse_mode: "Markdown",
-      reply_markup: keyboard,
+    const preview = renderDraftPreview(pending, actionId, "Tone Updated");
+    await ctx.editMessageText(preview.text, {
+      parse_mode: "HTML",
+      reply_markup: preview.keyboard,
     });
   } catch (err) {
     console.error("Tone switch error:", err);
@@ -314,12 +293,9 @@ bot.callbackQuery(/^rename_(.+)$/, async (ctx) => {
     ctx.session.awaitingResumeName = true;
     ctx.session.currentActionId = actionId;
 
-    const currentName = pending.customResumeName || "resume.pdf";
     await ctx.reply(
-      `Current resume filename: \`${currentName}\`\n\nPlease type the new filename (e.g. \`Emmanuel_Frontend_CV.pdf\`):`,
-      {
-        parse_mode: "Markdown",
-      },
+      `Current resume filename: <code>${escapeHtml(resumeAttachmentName(pending))}</code>\n\nPlease type the new filename (e.g. <code>Jane_Doe_Frontend_Resume.pdf</code>):`,
+      { parse_mode: "HTML" },
     );
     await ctx.answerCallbackQuery();
   } catch (err) {
@@ -379,47 +355,28 @@ bot.callbackQuery(/^send_(.+)$/, async (ctx) => {
       return;
     }
 
-    // Attach Cover Letter if we generated one
-    const attachments: { filename: string; path: string }[] = [];
-    if (pending.coverLetterPath) {
-      attachments.push({
-        filename: "Cover_Letter.pdf",
-        path: pending.coverLetterPath,
-      });
+    const { attachments, missing } = getEmailAttachments(pending);
+    let summary =
+      `<b>Confirm send</b>\n\n` +
+      `<b>From:</b> ${escapeHtml(pending.draftCtx.applicantName ? `${pending.draftCtx.applicantName} <${emailAccount.email_address}>` : emailAccount.email_address)}\n` +
+      `<b>To:</b> ${escapeHtml(pending.jobData.applicationEmail)}\n` +
+      `<b>Role:</b> ${escapeHtml(pending.jobData.jobTitle)}\n` +
+      `<b>Subject:</b> ${escapeHtml(pending.draft.subject)}\n` +
+      `<b>Attachments:</b> ${attachments.length ? attachments.map((a) => `<code>${escapeHtml(a.filename)}</code>`).join(", ") : "none"}\n`;
+    if (missing.length) {
+      summary += `\n⚠️ Missing on the server: ${escapeHtml(missing.join(", "))}. Upload again before sending.\n`;
     }
+    summary += `\nProceed?`;
 
-    let resumePath: string | null = null;
-    if (pending.userId && ctx.from) {
-      resumePath = await getLatestResumePathForTelegramUser(
-        ctx.from.id,
-        ctx.from.first_name || ctx.from.last_name
-          ? `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim()
-          : undefined,
-        ctx.from.username || undefined,
-      );
-    }
-
-    if (resumePath) {
-      const finalName = pending.customResumeName || "resume.pdf";
-      attachments.push({ filename: finalName, path: resumePath });
-    }
-
-    const summary =
-      `**Confirm send**\n\n` +
-      `From: \`${emailAccount.email_address}\`\n` +
-      `To: \`${pending.jobData.applicationEmail}\`\n` +
-      `Role: ${pending.jobData.jobTitle}\n` +
-      `Subject: \`${pending.draft.subject}\`\n\n` +
-      `Proceed?`;
-
-    const keyboard = new InlineKeyboard()
-      .text("✅ Confirm send", `confirm_send_${actionId}`)
-      .text("❌ Cancel", `cancel_${actionId}`);
+    const keyboard = new InlineKeyboard();
+    if (!missing.length) keyboard.text("✅ Confirm send", `confirm_send_${actionId}`);
+    keyboard.text("❌ Cancel", `cancel_${actionId}`);
 
     await ctx.editMessageText(summary, {
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
       reply_markup: keyboard,
     });
+    await ctx.answerCallbackQuery();
   } catch (error) {
     console.error("Failed to send email via callback:", error);
     await ctx.answerCallbackQuery({
@@ -466,20 +423,13 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
       return;
     }
 
-    const attachments: { filename: string; path: string }[] = [];
-    if (pending.coverLetterPath) {
-      attachments.push({
-        filename: "Cover_Letter.pdf",
-        path: pending.coverLetterPath,
-      });
-    }
-
-    const resumePath: string | null = await getLatestResumePathForTelegramUser(
-      ctx.from.id,
-    );
-    if (resumePath) {
-      const finalName = pending.customResumeName || "resume.pdf";
-      attachments.push({ filename: finalName, path: resumePath });
+    const { attachments, missing } = getEmailAttachments(pending);
+    if (missing.length) {
+      await ctx.editMessageText(
+        `❌ Not sent: ${missing.join(", ")} is missing on the server. Upload again and redo the application.`,
+      );
+      await ctx.answerCallbackQuery();
+      return;
     }
 
     await ctx.editMessageText(
@@ -490,8 +440,9 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
       queueForUser(pending.userId, () =>
         sendApplicationEmailForUser(pending.userId, {
           to: pending.jobData.applicationEmail!,
+          ...(pending.draftCtx.applicantName ? { fromName: pending.draftCtx.applicantName } : {}),
           subject: pending.draft.subject,
-          bodyText: pending.draft.bodyText,
+          bodyText: composePendingEmailBody(pending),
           attachments,
         }),
       ),
@@ -509,8 +460,8 @@ bot.callbackQuery(/^confirm_send_(.+)$/, async (ctx) => {
                 ...(pending.coverLetterPath ? { coverLetterPath: pending.coverLetterPath } : {}),
               });
       await ctx.editMessageText(
-        `✅ **Application Sent!**\n\nTo: \`${pending.jobData.applicationEmail}\`\nSubject: \`${pending.draft.subject}\`\n\nTracked in /my\\_applications.`,
-        { parse_mode: "Markdown" },
+        `✅ <b>Application Sent!</b>\n\n<b>To:</b> ${escapeHtml(pending.jobData.applicationEmail)}\n<b>Subject:</b> ${escapeHtml(pending.draft.subject)}\n\nTracked in /my_applications.`,
+        { parse_mode: "HTML" },
       );
       pendingEmails.delete(actionId);
     } else {

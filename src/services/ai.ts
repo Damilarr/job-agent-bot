@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'groq-sdk/resources/chat/completions';
 import { env } from '../config/env.js';
 
 // Groq retires models periodically; keep the model name in one place.
@@ -18,12 +19,23 @@ class AIService {
   private client: Groq;
 
   constructor() {
-    this.client = new Groq({ apiKey: env.GROQ_API_KEY });
+    // The free tier allows 8k tokens/minute, and one application makes several calls.
+    // The SDK honours Groq's retry-after header on 429s, so allow enough retries to wait out a full window.
+    this.client = new Groq({ apiKey: env.GROQ_API_KEY, maxRetries: 6 });
     console.log(`🤖 AI Service initialized with Groq.`);
   }
 
-  getClient(): Groq {
-    return this.client;
+  /**
+   * Chat completion with the shared model and low reasoning effort.
+   * gpt-oss reasoning tokens count toward the rate limit, and these tasks don't need deep reasoning.
+   */
+  complete(params: Omit<ChatCompletionCreateParamsNonStreaming, 'model'>): Promise<ChatCompletion> {
+    return this.client.chat.completions.create({
+      model: GROQ_MODEL,
+      reasoning_effort: 'low',
+      ...params,
+      stream: false,
+    });
   }
 }
 

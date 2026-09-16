@@ -1,4 +1,6 @@
-import { aiService, GROQ_MODEL, normalizeDashes } from "../services/ai.js";
+import { aiService, normalizeDashes } from "../services/ai.js";
+import { FACT_RULES, STYLE_RULES } from "./drafter.js";
+import { removeUnsupportedClaims } from "./factCheck.js";
 import type { ParsedJobDescription } from "./parser.js";
 import {
   markdownToHtml,
@@ -7,7 +9,7 @@ import {
 } from "./pdf.js";
 
 /**
- * Generates a tailored Cover Letter in Markdown format using Groq, then converts it to PDF.
+ * Generates a tailored Cover Letter in Markdown format using Groq, fact-checks it, then converts it to PDF.
  */
 export async function generateCoverLetterPDF(
   jobData: ParsedJobDescription,
@@ -15,36 +17,38 @@ export async function generateCoverLetterPDF(
   outputPath: string,
 ): Promise<string> {
   const prompt = `
-You are an expert career strategist and you are writing a cover letter for me.
-My CV is below:
+You are writing a cover letter in the first person on behalf of the candidate.
+Today's date is ${new Date().toISOString().slice(0, 10)}.
+${FACT_RULES}
+${STYLE_RULES}
+
+Candidate background:
 ---
 ${cvText}
 ---
 
-The job I am applying for is:
+Job:
+---
 Job Title: ${jobData.jobTitle}
-Company Name: ${jobData.companyName || "the company"}
+Company Name: ${jobData.companyName || "Not specified"}
 Company Values / About Us: ${jobData.companyValues || "Not specified"}
 Required Skills: ${jobData.keySkills.join(", ")}
 Required Experience: ${jobData.requiredExperience}
+---
 
-WRITE A COVER LETTER matching my CV to this job.
+STRUCTURE (3 short paragraphs, 180-250 words in total):
+1. Greeting: "Dear ${jobData.companyName ? `${jobData.companyName} Hiring Team` : "Hiring Team"},"
+2. Paragraph 1: the role being applied for and a one-line summary of who the candidate is.
+3. Paragraph 2: the 2 most relevant pieces of work from the background for this job, described exactly as the background describes them. Name the employer or project.
+4. Paragraph 3: why this role${jobData.companyName ? ` at ${jobData.companyName}` : ""} is a fit, using only the job details above and real overlap with the background, then a simple closing line.
+5. Sign-off: "Best regards," on its own line, followed by the candidate's name from the background.
 
-CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
-1. DO NOT use robotic AI buzzwords like: "synergy", "delve", "testament", "tapestry", "I am writing to express my interest", "thrilled to apply", "pivotal".
-2. Use a conversational, confident, and professional tone. Sound like a real, competent human being.
-3. Keep it concise. Max 3-4 short paragraphs.
-4. CONNECT MY CV TO THEM: Explicitly mention 1 or 2 specific achievements from my CV that prove I can solve the problems they are hiring for. 
-5. ALIGN WITH THEIR VALUES: If company values/about us info is provided above, subtly align my motivation with those values. Do not aggressively parrot their values back to them.
-6. Return the raw output in clean Markdown format (no markdown codeblock wrapping ticks \`\`\`markdown). Do not include placeholder brackets like [Date] or [Company Address] at the top, just jump straight into the greeting (e.g., "Dear Hiring Team,").
-7. Sign off with my name from the CV.
-8. NEVER use em dashes or en dashes. Use a plain hyphen "-", a comma, or a new sentence instead.
+Output clean Markdown with no code fences and no placeholders like [Date] or [Company Address]. Start directly with the greeting.
 `;
 
-  const ai = aiService.getClient();
-  const response = await ai.chat.completions.create({
-    model: GROQ_MODEL,
+  const response = await aiService.complete({
     messages: [{ role: "user", content: prompt }],
+    temperature: 0.2,
   });
 
   const markdownContent = response.choices[0]?.message?.content;
@@ -52,7 +56,8 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
     throw new Error("Groq failed to generate cover letter markdown.");
   }
 
-  const html = wrapCoverLetterHtml(markdownToHtml(normalizeDashes(markdownContent)));
+  const checked = await removeUnsupportedClaims(normalizeDashes(markdownContent), cvText);
+  const html = wrapCoverLetterHtml(markdownToHtml(checked));
   await renderHtmlToPdf(html, outputPath);
 
   return outputPath;

@@ -1,4 +1,5 @@
 import type { DraftContext, DraftTone, EmailDraft } from "../services/drafter.js";
+import type { MatchEvaluation } from "../services/matcher.js";
 import type { ParsedJobDescription } from "../services/parser.js";
 
 const GLOBAL_CONCURRENCY = 2;
@@ -31,19 +32,23 @@ function queueForUser<T>(userId: number, fn: () => Promise<T>): Promise<T> {
   );
   return next;
 }
-const pendingEmails = new Map<
-  string,
-  {
-    jobData: ParsedJobDescription;
-    match: any;
-    draft: EmailDraft;
-    customResumeName?: string;
-    coverLetterPath?: string;
-    userId: number;
-    cvText?: string;
-    draftCtx?: DraftContext;
-    tone?: DraftTone;
-  }
->();
+
+export interface PendingEmail {
+  jobData: ParsedJobDescription;
+  match: MatchEvaluation;
+  draft: EmailDraft;
+  userId: number;
+  /** Profile text combined with the extracted resume text */
+  cvText: string;
+  draftCtx: DraftContext;
+  tone: DraftTone;
+  /** Resume found on disk when the draft was created */
+  resumePath?: string;
+  customResumeName?: string;
+  coverLetterPath?: string;
+  coverLetterError?: string;
+}
+
+const pendingEmails = new Map<string, PendingEmail>();
 
 export { globalActive, globalQueue, pendingEmails, queueForUser, userChains, withGlobalLimit };

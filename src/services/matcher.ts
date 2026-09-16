@@ -1,4 +1,4 @@
-import { aiService, GROQ_MODEL } from '../services/ai.js';
+import { aiService, normalizeDashes } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
 const evaluationSchema = {
@@ -54,9 +54,7 @@ export async function evaluateMatch(
   `;
 
   try {
-    const ai = aiService.getClient();
-    const response = await ai.chat.completions.create({
-      model: GROQ_MODEL,
+    const response = await aiService.complete({
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(evaluationSchema, null, 2) }
@@ -71,7 +69,7 @@ export async function evaluateMatch(
     }
 
     const evaluation: MatchEvaluation = JSON.parse(resultText);
-    return evaluation;
+    return { ...evaluation, feedback: normalizeDashes(evaluation.feedback) };
   } catch (error) {
     console.error("Error evaluating match:", error);
     throw new Error("Failed to evaluate match via Groq API.");

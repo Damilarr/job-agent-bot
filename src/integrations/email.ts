@@ -3,6 +3,8 @@ import { getUserEmailAccount } from "../data/db.js";
 
 export interface EmailPayload {
   to: string;
+  /** Display name shown to the recipient, e.g. "Jane Doe" */
+  fromName?: string;
   subject: string;
   bodyText: string;
   attachments?: { filename: string; path: string }[];
@@ -55,7 +57,9 @@ export async function sendApplicationEmailForUser(
     });
 
     const info = await transporter.sendMail({
-      from: account.email_address,
+      from: payload.fromName
+        ? { name: payload.fromName, address: account.email_address }
+        : account.email_address,
       to: payload.to,
       subject: payload.subject,
       text: textBody,
