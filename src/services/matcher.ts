@@ -1,4 +1,4 @@
-import { aiService } from '../services/ai.js';
+import { aiService, GROQ_MODEL } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
 const evaluationSchema = {
@@ -56,7 +56,7 @@ export async function evaluateMatch(
   try {
     const ai = aiService.getClient();
     const response = await ai.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(evaluationSchema, null, 2) }

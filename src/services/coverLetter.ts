@@ -1,4 +1,4 @@
-import { aiService } from "../services/ai.js";
+import { aiService, GROQ_MODEL, normalizeDashes } from "../services/ai.js";
 import type { ParsedJobDescription } from "./parser.js";
 import {
   markdownToHtml,
@@ -38,11 +38,12 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
 5. ALIGN WITH THEIR VALUES: If company values/about us info is provided above, subtly align my motivation with those values. Do not aggressively parrot their values back to them.
 6. Return the raw output in clean Markdown format (no markdown codeblock wrapping ticks \`\`\`markdown). Do not include placeholder brackets like [Date] or [Company Address] at the top, just jump straight into the greeting (e.g., "Dear Hiring Team,").
 7. Sign off with my name from the CV.
+8. NEVER use em dashes or en dashes. Use a plain hyphen "-", a comma, or a new sentence instead.
 `;
 
   const ai = aiService.getClient();
   const response = await ai.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
+    model: GROQ_MODEL,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -51,7 +52,7 @@ CRITICAL CONSTRAINTS - YOU MUST OBEY THESE OR FAIL:
     throw new Error("Groq failed to generate cover letter markdown.");
   }
 
-  const html = wrapCoverLetterHtml(markdownToHtml(markdownContent));
+  const html = wrapCoverLetterHtml(markdownToHtml(normalizeDashes(markdownContent)));
   await renderHtmlToPdf(html, outputPath);
 
   return outputPath;

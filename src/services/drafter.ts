@@ -1,4 +1,4 @@
-import { aiService } from '../services/ai.js';
+import { aiService, GROQ_MODEL, normalizeDashes } from '../services/ai.js';
 import type { ParsedJobDescription } from './parser.js';
 
 const draftSchema = {
@@ -30,6 +30,14 @@ export interface DraftContext {
   portfolioUrl?: string;
   applicantName?: string;
   tone?: DraftTone;
+}
+
+function cleanDraft(draft: EmailDraft): EmailDraft {
+  return {
+    ...draft,
+    subject: normalizeDashes(draft.subject),
+    bodyText: normalizeDashes(draft.bodyText),
+  };
 }
 
 /**
@@ -71,10 +79,11 @@ export async function generateEmailDraft(
     3. Keep it ultra-short. Maximum 3-4 sentences (under 50 words). 
     4. Start normally (e.g., "Hi Team,", "Hi there,", or just "Hello,").
     5. Directly mention 1 specific skill/achievement from my CV that proves I can do what they need.
-    6. You MUST use the EXACT links provided below — do NOT invent, shorten, or substitute any URL.${linksBlock ? ` Include my portfolio link naturally in the text.` : ""}
+    6. You MUST use the EXACT links provided below - do NOT invent, shorten, or substitute any URL.${linksBlock ? ` Include my portfolio link naturally in the text.` : ""}
     7. Maintain the ${tone} tone throughout.
     8. If a company name is provided, mention it once naturally (e.g., "at [Company]").
     9. Reference at least one specific responsibility or requirement from the JD to show you read it.
+    10. NEVER use em dashes or en dashes. Use a plain hyphen "-", a comma, or a new sentence instead.
     ${feedback ? `\n    Context/Feedback provided: ${feedback}` : ""}
 
     Candidate CV:
@@ -98,7 +107,7 @@ export async function generateEmailDraft(
   try {
     const ai = aiService.getClient();
     const response = await ai.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(draftSchema, null, 2) }
@@ -112,8 +121,7 @@ export async function generateEmailDraft(
       throw new Error("No text response from Groq during email draft generation.");
     }
 
-    const draft: EmailDraft = JSON.parse(resultText);
-    return JSON.parse(resultText) as EmailDraft;
+    return cleanDraft(JSON.parse(resultText) as EmailDraft);
   } catch (error) {
     console.error("Failed to generate email draft:", error);
     throw new Error("Could not draft the application email.");
@@ -137,6 +145,7 @@ export async function reviseEmailDraft(originalDraft: EmailDraft, feedback: stri
     Your task is to rewrite the email draft applying these instructions EXACTLY.
     If they ask you to remove something, remove it. If they ask you to add something, add it smoothly.
     Keep the rest of the tone identical to the original draft unless instructed otherwise.
+    NEVER use em dashes or en dashes. Use a plain hyphen "-", a comma, or a new sentence instead.
     
     Return the result strictly as a JSON object matching this schema:
     {
@@ -148,7 +157,7 @@ export async function reviseEmailDraft(originalDraft: EmailDraft, feedback: stri
   try {
     const ai = aiService.getClient();
     const response = await ai.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         { role: 'user', content: prompt }
       ],
@@ -158,7 +167,7 @@ export async function reviseEmailDraft(originalDraft: EmailDraft, feedback: stri
     const text = response.choices[0]?.message?.content;
     if (!text) throw new Error("Empty response from Groq.");
 
-    return JSON.parse(text) as EmailDraft;
+    return cleanDraft(JSON.parse(text) as EmailDraft);
   } catch (error) {
     console.error("Failed to revise email draft:", error);
     throw new Error("Could not revise the application email.");

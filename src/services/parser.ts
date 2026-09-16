@@ -1,4 +1,4 @@
-import { aiService } from '../services/ai.js';
+import { aiService, GROQ_MODEL } from '../services/ai.js';
 
 // Define the expected output structure using standard JSON schema format
 const responseSchema = {
@@ -65,12 +65,12 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
     
     Extract the following details:
     1. Job Title.
-    2. Company Name — if not stated explicitly, try to infer it from the application email domain (e.g. admin@hotspotsbeauty.com → HotSpotsBeauty). Return null ONLY if truly unidentifiable.
+    2. Company Name - if not stated explicitly, try to infer it from the application email domain (e.g. admin@hotspotsbeauty.com → HotSpotsBeauty). Return null ONLY if truly unidentifiable.
     3. Key Skills (as a list).
     4. Required Experience level.
     5. The Application Email address (if it exists).
-    6. Whether a Resume/CV should be attached — for any real job application (especially when an email is provided to send the application to), default to TRUE. Only set false for informal referral requests or info forms.
-    7. Whether a Cover Letter should be included — for any direct email application to a company, default to TRUE. Only set false for quick referral pings or forms.
+    6. Whether a Resume/CV should be attached - for any real job application (especially when an email is provided to send the application to), default to TRUE. Only set false for informal referral requests or info forms.
+    7. Whether a Cover Letter should be included - for any direct email application to a company, default to TRUE. Only set false for quick referral pings or forms.
 
     Here is the job description:
     ---
@@ -81,7 +81,7 @@ export async function parseJobDescription(text: string): Promise<ParsedJobDescri
   try {
     const ai = aiService.getClient();
     const response = await ai.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODEL,
       messages: [
         { role: 'system', content: prompt },
         { role: 'user', content: 'Output ONLY a valid JSON object matching this schema:\n' + JSON.stringify(responseSchema, null, 2) }
