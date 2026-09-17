@@ -1,12 +1,28 @@
 import { Bot } from 'grammy';
+import cron from 'node-cron';
 import { env } from '../config/env.js';
 import { getAdminChatId, getTodaysProcessedJobs } from '../data/db.js';
+import { getEnabledOutreachSettings } from '../outreach/store.js';
+import { runOutreachAndNotify, sendFollowUpReminders } from './handlers/outreach.js';
+
+/** Weekdays at 14:00 UTC: morning on the US east coast, afternoon in Europe. */
+const OUTREACH_SCHEDULE = '0 14 * * 1-5';
 
 /**
  * Initializes all background scheduled tasks.
  */
 export function startScheduler() {
-  console.log("⏰ Scheduler is currently disabled (auto-apply paused for multi-user upgrade).");
+  cron.schedule(
+    OUTREACH_SCHEDULE,
+    async () => {
+      for (const settings of await getEnabledOutreachSettings()) {
+        await runOutreachAndNotify(settings.user_id);
+        await sendFollowUpReminders(settings.user_id);
+      }
+    },
+    { timezone: 'UTC', name: 'cold-outreach', noOverlap: true },
+  );
+  console.log(`⏰ Cold outreach scheduled (${OUTREACH_SCHEDULE} UTC) for users who turned it on.`);
 }
 
 /**

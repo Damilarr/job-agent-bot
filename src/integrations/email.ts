@@ -8,6 +8,8 @@ export interface EmailPayload {
   subject: string;
   bodyText: string;
   attachments?: { filename: string; path: string }[];
+  /** Message-ID of the email being replied to, so follow-ups land in the same thread */
+  inReplyTo?: string;
 }
 
 function normalizeLineBreaks(text: string): string {
@@ -65,6 +67,7 @@ export async function sendApplicationEmailForUser(
       text: textBody,
       html: htmlBody,
       attachments: payload.attachments,
+      ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo, references: [payload.inReplyTo] } : {}),
     });
 
     console.log("Email sent successfully! MessageId:", info.messageId);

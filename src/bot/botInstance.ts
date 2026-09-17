@@ -47,6 +47,10 @@ export const BOT_MENU_COMMANDS = [
     description: "Download the last generated cover letter",
   },
   {
+    command: "outreach",
+    description: "Cold-email small international companies with your resume",
+  },
+  {
     command: "my_status",
     description: "See your setup status and recent activity",
   },

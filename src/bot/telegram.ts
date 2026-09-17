@@ -2,6 +2,8 @@ import { bot, BOT_MENU_COMMANDS, setBotDescription } from "./botInstance.js";
 
 import "./handlers/callbacks.js";
 import "./handlers/commands.js";
+// Registered before messages.js, whose catch-all text handler would otherwise swallow these commands
+import "./handlers/outreach.js";
 import "./handlers/messages.js";
 
 export async function startBot() {

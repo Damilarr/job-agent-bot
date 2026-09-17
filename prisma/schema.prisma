@@ -37,6 +37,8 @@ model users {
   events           user_events[]
   applications     user_applications[]
   form_answers_cache user_form_answers_cache[]
+  outreach_settings outreach_settings?
+  outreach_leads   outreach_leads[]
 }
 
 model user_profiles {
@@ -130,4 +132,54 @@ model user_form_answers_cache {
   user       users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([user_id, form_id])
+}
+
+model outreach_settings {
+  user_id            Int      @id
+  enabled            Boolean  @default(false)
+  daily_cap          Int      @default(5)
+  /// Where the candidate is based, e.g. "Nigeria (WAT, UTC+1)"; stated in every cold email
+  candidate_location String?
+  /// Roles the candidate is open to, e.g. "Frontend or full-stack engineer (junior to mid-level)"
+  target_roles       String?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @default(now())
+
+  user               users    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+/// A company considered for cold outreach. One row per user and company domain, so nobody is contacted twice.
+model outreach_leads {
+  id                   Int       @id @default(autoincrement())
+  user_id              Int
+  source               String
+  source_url           String?
+  company_name         String
+  domain               String
+  description          String?
+  company_country      String?
+  team_size            Int?
+  hiring_notes         String?
+  /// new | rejected | no_contact | sent
+  status               String    @default("new")
+  status_reason        String?
+  contact_name         String?
+  contact_title        String?
+  contact_email        String?
+  /// apollo | published
+  contact_email_source String?
+  subject              String?
+  body                 String?
+  message_id           String?
+  application_id       Int?
+  sent_at              DateTime?
+  followup_sent_at     DateTime?
+  followup_reminded_at DateTime?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @default(now())
+
+  user                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, domain])
+  @@index([user_id, status, sent_at])
 }
