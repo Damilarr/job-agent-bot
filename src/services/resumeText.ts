@@ -46,3 +46,54 @@ ${profileText}
 RESUME (the candidate's full resume; use it for employers, dates, projects and achievements):
 ${resumeText}`;
 }
+
+const SECTION_TITLES = /^(experience|work experience|projects|education|skills|technical skills|professional summary|summary|recent highlights|certifications|awards)\s*:?$/i;
+const BULLET = /^\s*[–—•*-]\s+/;
+
+/**
+ * Turns resume and profile bullet points into standalone claims, each labelled with its employer or project,
+ * e.g. "[MyAI Robotics LLC Oct 2024 – Nov 2025 | Fullstack Developer] Built a custom web search module ...".
+ * Cold emails may only use these claims, which stops the model from merging or embellishing work.
+ */
+export function extractFactList(profileText: string, resumeText: string | null): string[] {
+  const facts: string[] = [];
+
+  const collect = (text: string, fallbackLabel: string) => {
+    let pendingHeading: string[] = [];
+    let blockLabel = fallbackLabel;
+    let inProjects = false;
+    let current: { label: string; text: string } | null = null;
+    const flush = () => {
+      const isKeyValue = current && /^[A-Za-z /&]+:\s/.test(current.text); // e.g. "Languages: JavaScript, ..."
+      if (current && !isKeyValue && current.text.split(/\s+/).length >= 5) facts.push(`[${current.label}] ${current.text.trim()}`);
+      current = null;
+    };
+
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (BULLET.test(line)) {
+        flush();
+        if (pendingHeading.length) blockLabel = `${inProjects ? "Personal project: " : ""}${pendingHeading.join(" | ")}`;
+        pendingHeading = [];
+        current = { label: blockLabel, text: line.replace(BULLET, "") };
+      } else if (current && /^[a-z(]/.test(line)) {
+        current.text += ` ${line}`; // wrapped continuation of the previous bullet
+      } else {
+        flush();
+        if (SECTION_TITLES.test(line)) {
+          pendingHeading = [];
+          blockLabel = fallbackLabel;
+          inProjects = /^projects/i.test(line);
+        } else {
+          pendingHeading = [...pendingHeading, line.replace(/:$/, "")].slice(-2);
+        }
+      }
+    }
+    flush();
+  };
+
+  if (resumeText) collect(resumeText, "Resume");
+  collect(profileText, "Profile highlight");
+  return facts;
+}

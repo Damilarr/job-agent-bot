@@ -4,7 +4,7 @@ import { addUserApplication, getLatestUserAsset, getUserEmailAccount, getUserLin
 import { extractDisplayNameFromCvText } from "../data/profile.js";
 import { sendApplicationEmailForUser } from "../integrations/email.js";
 import type { DraftContext } from "../services/drafter.js";
-import { buildCandidateBackground, extractPhone, extractResumeText } from "../services/resumeText.js";
+import { buildCandidateBackground, extractFactList, extractPhone, extractResumeText } from "../services/resumeText.js";
 import { ApolloClient } from "./apollo.js";
 import { generateColdEmail, generateFollowUp } from "./coldEmail.js";
 import { qualifyCompany } from "./qualify.js";
@@ -101,6 +101,7 @@ async function loadCandidates(skipped: OutreachRunReport["skipped"]): Promise<Co
 export interface OutreachSender {
   userId: number;
   background: string;
+  allowedClaims: string[];
   signature: DraftContext;
   resumePath: string;
   fromAddress: string;
@@ -134,6 +135,7 @@ export async function loadSender(userId: number): Promise<OutreachSender | strin
   return {
     userId,
     background: buildCandidateBackground(profile.cv_text, resumeText),
+    allowedClaims: extractFactList(profile.cv_text, resumeText),
     signature,
     resumePath: resume.path,
     fromAddress: account.email_address,
@@ -202,8 +204,10 @@ export async function runOutreachForUser(userId: number, options: OutreachRunOpt
       if (!options.dryRun && !lead) continue;
 
       try {
-        const company = listed.source === "yc" ? await hydrateYcCandidate(listed) : listed;
-        const qualification = await qualifyCompany(company, settings.target_roles, settings.candidate_location);
+        const listedOrHydrated = listed.source === "yc" ? await hydrateYcCandidate(listed) : listed;
+        const qualification = await qualifyCompany(listedOrHydrated, settings.target_roles, settings.candidate_location);
+        const company = { ...listedOrHydrated, name: qualification.companyName };
+        if (lead && company.name !== lead.company_name) await updateLead(lead.id, { company_name: company.name });
         if (!qualification.qualified) {
           report.skipped.push({ company: company.name, reason: qualification.reason });
           if (lead) await updateLead(lead.id, { status: "rejected", status_reason: qualification.reason, company_country: qualification.companyCountry });
@@ -223,6 +227,7 @@ export async function runOutreachForUser(userId: number, options: OutreachRunOpt
           qualification,
           contact,
           background: sender.background,
+          allowedClaims: sender.allowedClaims,
           targetRoles: settings.target_roles,
           candidateLocation: settings.candidate_location,
           signature: sender.signature,
@@ -280,6 +285,7 @@ export async function runOutreachForUser(userId: number, options: OutreachRunOpt
         if (error instanceof ApolloUnavailable) {
           apollo = null;
           apolloProblem = error.message;
+          report.skipped.push({ company: listed.name, reason: `Apollo unavailable, founder emails disabled for this run: ${error.message}` });
           if (lead) await releaseLead(lead.id).catch(() => {});
           continue;
         }

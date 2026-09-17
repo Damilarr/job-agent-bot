@@ -20,6 +20,8 @@ export function isAfricanCountry(country: string | undefined | null): boolean {
 
 export interface Qualification {
   qualified: boolean;
+  /** The company's real name; sources sometimes put a job title where the name should be */
+  companyName: string;
   reason: string;
   companyCountry: string | null;
   /** One sentence on what the company builds, in plain words, for the email opener */
@@ -38,10 +40,10 @@ export async function qualifyCompany(
   candidateLocation: string,
 ): Promise<Qualification> {
   if (isAfricanCountry(candidate.country)) {
-    return { qualified: false, reason: `Based in ${candidate.country}`, companyCountry: candidate.country ?? null, whatTheyBuild: "", angle: "" };
+    return { qualified: false, reason: `Based in ${candidate.country}`, companyName: candidate.name, companyCountry: candidate.country ?? null, whatTheyBuild: "", angle: "" };
   }
   if (candidate.teamSize && candidate.teamSize > 200) {
-    return { qualified: false, reason: `Too large (${candidate.teamSize} people)`, companyCountry: candidate.country ?? null, whatTheyBuild: "", angle: "" };
+    return { qualified: false, reason: `Too large (${candidate.teamSize} people)`, companyName: candidate.name, companyCountry: candidate.country ?? null, whatTheyBuild: "", angle: "" };
   }
 
   const prompt = `
@@ -49,7 +51,7 @@ You screen companies for a job seeker's cold outreach. Judge only from the data 
 
 Job seeker: open to ${targetRoles}. Based in ${candidateLocation}, working remotely.
 
-Company: ${candidate.name} (${candidate.domain})
+Company (as listed by the source, may be wrong): ${candidate.name} (${candidate.domain})
 Country: ${candidate.country || "unknown"}
 Team size: ${candidate.teamSize ?? "unknown"}
 Description:
@@ -59,6 +61,7 @@ Hiring and location evidence:
 ${candidate.hiringNotes.slice(0, 2000)}
 
 Answer these:
+0. companyName: the company's actual name as it would appear in an email greeting (e.g. "Legal Ark AI"), never a job title.
 1. companyCountry: the country where the company is headquartered, or null if unknown.
 2. buildsSoftware: does the company build its own software product (not an agency, staffing firm, or non-tech business)?
 3. needsWebEngineers: is it plausible they need frontend or full-stack web engineers?
@@ -67,7 +70,7 @@ Answer these:
 6. whatTheyBuild: one plain sentence describing what they build.
 7. angle: one sentence on why a ${targetRoles.split("(")[0]!.trim()} could help them, grounded only in the company data.
 
-Return JSON: {"companyCountry": string|null, "buildsSoftware": boolean, "needsWebEngineers": boolean, "remoteScope": "worldwide"|"restricted"|"unknown", "tooSenior": boolean, "whatTheyBuild": string, "angle": string}
+Return JSON: {"companyName": string, "companyCountry": string|null, "buildsSoftware": boolean, "needsWebEngineers": boolean, "remoteScope": "worldwide"|"restricted"|"unknown", "tooSenior": boolean, "whatTheyBuild": string, "angle": string}
 `;
 
   const response = await aiService.complete({
@@ -76,6 +79,7 @@ Return JSON: {"companyCountry": string|null, "buildsSoftware": boolean, "needsWe
     temperature: 0,
   });
   const r = JSON.parse(response.choices[0]?.message?.content || "{}") as {
+    companyName?: string;
     companyCountry?: string | null;
     buildsSoftware?: boolean;
     needsWebEngineers?: boolean;
@@ -86,7 +90,8 @@ Return JSON: {"companyCountry": string|null, "buildsSoftware": boolean, "needsWe
   };
 
   const companyCountry = r.companyCountry || candidate.country || null;
-  const base = { companyCountry, whatTheyBuild: r.whatTheyBuild || "", angle: r.angle || "" };
+  const companyName = r.companyName?.trim() && r.companyName.trim().length <= 60 ? r.companyName.trim() : candidate.name;
+  const base = { companyName, companyCountry, whatTheyBuild: r.whatTheyBuild || "", angle: r.angle || "" };
 
   if (isAfricanCountry(companyCountry)) return { ...base, qualified: false, reason: `Based in ${companyCountry}` };
   if (!r.buildsSoftware) return { ...base, qualified: false, reason: "Not a software product company" };
