@@ -67,10 +67,11 @@ Answer these:
 3. needsWebEngineers: is it plausible they need frontend or full-stack web engineers?
 4. remoteScope: "worldwide" if they hire remotely without country restrictions or across many regions; "restricted" if every role is limited to specific countries/regions that exclude ${candidateLocation} (e.g. "Remote (US)", "US citizen/visa only", "Europe only", onsite only); "unknown" otherwise.
 5. tooSenior: true only if every engineering role requires 6+ years or staff/principal level.
+5b. largeCompany: true only if the data clearly shows 500+ employees, a public company, or a large enterprise/institution (where founders don't read cold email).
 6. whatTheyBuild: one plain sentence describing what they build.
 7. angle: one sentence on why a ${targetRoles.split("(")[0]!.trim()} could help them, grounded only in the company data.
 
-Return JSON: {"companyName": string, "companyCountry": string|null, "buildsSoftware": boolean, "needsWebEngineers": boolean, "remoteScope": "worldwide"|"restricted"|"unknown", "tooSenior": boolean, "whatTheyBuild": string, "angle": string}
+Return JSON: {"companyName": string, "companyCountry": string|null, "buildsSoftware": boolean, "needsWebEngineers": boolean, "remoteScope": "worldwide"|"restricted"|"unknown", "tooSenior": boolean, "largeCompany": boolean, "whatTheyBuild": string, "angle": string}
 `;
 
   const response = await aiService.complete({
@@ -85,6 +86,7 @@ Return JSON: {"companyName": string, "companyCountry": string|null, "buildsSoftw
     needsWebEngineers?: boolean;
     remoteScope?: "worldwide" | "restricted" | "unknown";
     tooSenior?: boolean;
+    largeCompany?: boolean;
     whatTheyBuild?: string;
     angle?: string;
   };
@@ -98,6 +100,7 @@ Return JSON: {"companyName": string, "companyCountry": string|null, "buildsSoftw
   if (!r.needsWebEngineers) return { ...base, qualified: false, reason: "Unlikely to need web engineers" };
   if (r.remoteScope === "restricted") return { ...base, qualified: false, reason: "Remote hiring restricted to other countries" };
   if (r.tooSenior) return { ...base, qualified: false, reason: "Only hiring senior engineers" };
+  if (r.largeCompany) return { ...base, qualified: false, reason: "Large company" };
   if (!base.whatTheyBuild) return { ...base, qualified: false, reason: "Not enough company information" };
 
   return { ...base, qualified: true, reason: `Remote scope: ${r.remoteScope}` };
