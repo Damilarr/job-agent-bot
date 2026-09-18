@@ -4,3 +4,4 @@ jobs.sqlite
 .browser_profiles/
 uploads/
 *.pdf
+.DS_Store
